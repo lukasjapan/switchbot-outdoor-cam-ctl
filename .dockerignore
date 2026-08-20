@@ -1,0 +1,32 @@
+# The external content must NEVER enter the build context: an extracted NDK is
+# ~2.1 GB and the xapk payload ~140 MB. The NDK reaches the build as a named
+# context (see docker-compose.yml) and both are bind-mounted at run time.
+# Kept deliberately broad, and in step with .gitignore.
+*ndk*
+*sdk*
+*toolchain*
+switchbot-*-xapk
+*.zip
+*.apk
+*.xapk
+*.apkm
+*.apks
+*.aab
+*.7z
+*.rar
+*.tar
+*.tar.*
+*.tgz
+*.so
+*.so.*
+*.dex
+*.bmp
+*.tcfg
+
+# Outputs and local state.
+recordings
+*.mp4
+*.jpg
+
+.git
+.DS_Store

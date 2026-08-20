@@ -1,0 +1,50 @@
+# Any SDK / NDK / toolchain tree dropped at the repo root. Broad on purpose:
+# these are multi-gigabyte external downloads and none of them are ours.
+/*ndk*/
+/*sdk*/
+/*toolchain*/
+
+# Externally provided content, not managed by this project (see README.md).
+# The directories themselves are committed (via .keep) because docker compose
+# needs them to exist — the NDK one is a named build context, and a missing
+# build context fails the build before any of our error messages can run.
+# Their contents are ignored.
+#
+# The re-include is load-bearing: git prunes an ignored directory without
+# looking inside, so without it the /*ndk*/ rule above would swallow the .keep
+# and the version-named folder would not exist in a fresh clone.
+!/android-ndk-*/
+/android-ndk-*/*
+!/android-ndk-*/.keep
+/switchbot-*-xapk/*
+!/switchbot-*-xapk/.keep
+
+# Downloaded archives, anywhere (NDK zips, SwitchBot APK/XAPK bundles).
+*.zip
+*.apk
+*.xapk
+*.apkm
+*.apks
+*.aab
+*.7z
+*.rar
+*.tar
+*.tar.*
+*.tgz
+
+# Vendor binaries and key material extracted from the app package. Nothing
+# proprietary belongs in this repo — the libraries and keys come out of the
+# xapk the user supplies, so a stray extraction must never be committable.
+*.so
+*.so.*
+*.dex
+*.bmp
+*.tcfg
+
+# Local config and captured media.
+/recordings/*
+!/recordings/.keep
+*.mp4
+*.jpg
+
+.DS_Store

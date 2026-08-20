@@ -1,0 +1,45 @@
+# Build and run switchbot-outdoor-cam-ctl. Everything external is mounted:
+#   ./switchbot-9.11.15.13-xapk  the SwitchBot app payload (camera libs + key assets)
+#   ./android-ndk-r27d-linux     the Android NDK (LINUX host build)
+# Neither is managed by this project — populate them yourself, see README.md.
+# Both names carry their version so it is obvious what to obtain.
+#
+#   docker compose build
+#   docker compose run --rm switchbot-outdoor-cam-ctl selftest
+
+services:
+  switchbot-outdoor-cam-ctl:
+    build:
+      context: .
+      # The NDK is a named build context rather than part of the main context, so
+      # BuildKit transfers only the files clang actually opens instead of the
+      # whole 2 GB tree. Requires Compose v2.17+ / BuildKit.
+      additional_contexts:
+        ndk: ./android-ndk-r27d-linux
+    image: switchbot-outdoor-cam-ctl
+
+    volumes:
+      # Read-only: the image only ever reads from these.
+      - ./switchbot-9.11.15.13-xapk:/ext/xapk:ro
+      - ./android-ndk-r27d-linux:/ext/ndk:ro
+      # Credential cache, so `login` is a one-time thing.
+      - ~/.switchbot-outdoor-cam-ctl:/root/.switchbot-outdoor-cam-ctl
+      # Where relative --out paths land.
+      - ./recordings:/hostcwd
+
+    # The camera is reached by P2P/UDP hole punching, which needs the host's own
+    # network namespace rather than a NAT'd bridge.
+    network_mode: host
+
+    # Passed through from your shell when set, e.g.
+    #   TZ=Europe/Berlin VERBOSE=1 docker compose run --rm switchbot-outdoor-cam-ctl selftest
+    # TZ matters: with no zone bionic reports UTC, so recording timestamps would
+    # render in the wrong zone. VERBOSE also turns on the SDK's own internal
+    # android logging, via the liblog shim.
+    environment:
+      - TZ
+      - VERBOSE
+      # Default for --dev-id, so you need not repeat it on every command.
+      - OUTDOOR_CAM_DEV_ID
+
+    stdin_open: true
