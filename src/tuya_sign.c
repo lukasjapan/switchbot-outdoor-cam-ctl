@@ -1,4 +1,5 @@
 #include "tuya_sign.h"
+#include "config.h"
 #include "crypto.h"
 #include "http.h"
 #include "jni_mock.h"
@@ -12,8 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 
-// App identity + ATOP defaults (from the decompiled app / switchbot_config.json).
-#define TUYA_APP_KEY     "u93ven8vjtcc9ycmc7nx"
+// ATOP defaults (from the decompiled app). The app key/secret now come from
+// switchbot_config.json via sb_config() rather than being hardcoded here.
 #define TUYA_APP_VERSION "9.11.15.13"
 #define TUYA_LANG        "en"
 #define TUYA_TTID        "sdk_super_new"
@@ -124,6 +125,8 @@ static void append_urlencoded(JBuf *b, const char *s){
 JDoc *tuya_atop(const char *api_url, const char *api_name, const char *api_version,
                 const char *post_json, const TuyaSession *session, const char *gid){
     if(!api_url || !api_name) return NULL;
+    const SbConfig *cfg = sb_config();
+    if(!cfg) return NULL;
 
     char request_id[37];
     rand_uuid(request_id);
@@ -153,7 +156,7 @@ JDoc *tuya_atop(const char *api_url, const char *api_name, const char *api_versi
     int n = 0;
     param_set(p, &n, "a",          api_name, 0);
     param_set(p, &n, "v",          api_version ? api_version : "1.0", 0);
-    param_set(p, &n, "clientId",   TUYA_APP_KEY, 0);
+    param_set(p, &n, "clientId",   cfg->tyAppKey, 0);
     param_set(p, &n, "time",       time_s, 0);
     param_set(p, &n, "requestId",  request_id, 0);
     param_set(p, &n, "et",         TUYA_ET, 0);

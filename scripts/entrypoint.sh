@@ -24,6 +24,10 @@ for a in t_s.bmp t_cdc.tcfg; do
         exit 1
     }
 done
+[ -f /ext/xapk/assets/switchbot_config.json ] || {
+    echo "error: /ext/xapk/assets/switchbot_config.json missing — it carries the Tuya app key/secret and SwitchBot endpoints." >&2
+    exit 1
+}
 
 # ------------------------------------------------------------- NDK indirection
 # The host tag (linux-x86_64) can't be globbed at image-build time, so the

@@ -13,10 +13,8 @@
 
 #include "creds.h"
 
-// Prod endpoints + app identity (assets/switchbot_config.json, `prd` block).
-#define SB_ACCOUNT_BASE   "https://account.api.switchbot.net"
-#define SB_WONDERLABS_BASE "https://wonderlabs.us.api.switchbot.net"
-#define SB_CLIENT_ID      "5nnwmhmsa9xxskm14hd85lm9bm"
+// Endpoints + app identity now come from switchbot_config.json (`prd` block)
+// via sb_config() (config.h). SB_APP_VERSION is not in that config, so it stays.
 #define SB_APP_VERSION    "9.11.15"
 
 // Stage 1: log in with account credentials. Fills sbAccess/sbRefresh/expiries.

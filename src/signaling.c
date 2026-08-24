@@ -1,4 +1,5 @@
 #include "signaling.h"
+#include "config.h"
 #include "crypto.h"
 #include "json.h"
 #include "mqtt.h"
@@ -13,7 +14,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define TUYA_APP_KEY "u93ven8vjtcc9ycmc7nx"
 #define TUYA_PKG     "com.theswitchbot.switchbot"
 
 struct Signaling {
@@ -82,16 +82,18 @@ Signaling *signaling_start(const TuyaSession *s, const CredDevice *dev, const ch
     sg->seq_o = rand_origin();
 
     // username: <partnerIdentity>_v1_<appId>_<chKey>_mb_<sid><md5tail>
+    const SbConfig *cfg = sb_config();
+    if(!cfg){ free(sg); return NULL; }
     char *chkey = security_get_ch_key(NULL);
     char inner[64], md5_1[33], md5_2[33];
-    if(crypto_md5_hex(TUYA_APP_KEY, md5_1) != 0){ free(chkey); free(sg); return NULL; }
+    if(crypto_md5_hex(cfg->tyAppKey, md5_1) != 0){ free(chkey); free(sg); return NULL; }
     snprintf(inner, sizeof inner, "%s%s", md5_1, s->ecode ? s->ecode : "");
     if(crypto_md5_hex(inner, md5_2) != 0){ free(chkey); free(sg); return NULL; }
     const char *md5tail = md5_2 + 16;          // last 16 chars of the hex digest
 
     char username[512];
     snprintf(username, sizeof username, "%s_v1_%s_%s_mb_%s%s",
-             s->partnerIdentity, TUYA_APP_KEY, chkey ? chkey : "", s->sid, md5tail);
+             s->partnerIdentity, cfg->tyAppKey, chkey ? chkey : "", s->sid, md5tail);
     free(chkey);
 
     char client_id[600];

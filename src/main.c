@@ -9,6 +9,7 @@
 // Output convention: stdout = data only, stderr = human-readable status.
 #include "camera.h"
 #include "cloud.h"
+#include "config.h"
 #include "creds.h"
 #include "http.h"
 #include "jni_mock.h"
@@ -306,10 +307,13 @@ static int cmd_selftest(void){
     // HTTPS reachability: DNS + TLS through the app's OpenSSL 1.1, which the
     // cloud provisioning layer depends on. Uses a cheap unauthenticated probe.
     st_info("checking HTTPS (TLS via libssl.1.1)…");
+    const SbConfig *cfg = sb_config();
+    if(!cfg) return 1;
     HttpResponse hr;
     const char *hdrs[] = { "Content-Type: application/json", NULL };
-    if(http_request("POST", "https://account.api.switchbot.net/account/api/v2/user/exist",
-                    hdrs, "{}", &hr) != 0){
+    char exist_url[256];
+    snprintf(exist_url, sizeof exist_url, "%s/account/api/v2/user/exist", cfg->accountBase);
+    if(http_request("POST", exist_url, hdrs, "{}", &hr) != 0){
         st_err("HTTPS check failed");
         return 1;
     }
@@ -959,6 +963,15 @@ int main(int argc, char **argv){
     }
 
     jni_mock_init();
+
+    // Fail fast if the bundled app config (switchbot_config.json) is missing or
+    // unreadable — every command below needs the Tuya keys / SwitchBot endpoints
+    // it carries. sb_config() caches, so this just front-loads the check.
+    if(!sb_config()){
+        st_err("cannot load switchbot_config.json — is the APK asset mounted? "
+               "(set SWITCHBOT_CONFIG or ASSETS_DIR)");
+        return 1;
+    }
 
     // With --dev-id, selftest also brings up the signaling transport.
     if(!strcmp(o.cmd, "selftest")) return o.dev_id ? selftest_signaling(&o) : cmd_selftest();

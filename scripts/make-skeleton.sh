@@ -61,6 +61,7 @@ done
 ln -sfn "/opt/outdoor-cam-ctl/$BIN"        "$SYS/work/$BIN"
 ln -sfn /ext/xapk/assets/t_s.bmp           "$SYS/work/assets/t_s.bmp"
 ln -sfn /ext/xapk/assets/t_cdc.tcfg        "$SYS/work/assets/t_cdc.tcfg"
+ln -sfn /ext/xapk/assets/switchbot_config.json "$SYS/work/assets/switchbot_config.json"
 ln -sfn /run/outdoor-cam-ctl/signer.der    "$SYS/work/signer.der"
 
 # --- the one real file: bionic's linker config

@@ -1,13 +1,10 @@
 #include "security.h"
+#include "config.h"
 #include "jni_mock.h"
 #include "status.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-// App identity (assets/switchbot_config.json, prd block).
-#define TUYA_APP_KEY    "u93ven8vjtcc9ycmc7nx"
-#define TUYA_APP_SECRET "57mgnfqs3gvn4mk8ppqpsuae4unx9993"
 
 // Native prototypes, per the registered signatures. Every JNI native takes
 // (JNIEnv*, jclass) first; `Context` arguments are satisfied with a mock object.
@@ -49,10 +46,12 @@ int security_init(void){
         st_err("libthing_security: doCommandNative not registered (%d natives seen)", jni_native_count());
         return -1;
     }
+    const SbConfig *cfg = sb_config();
+    if(!cfg) return -1;
     // op 0 is the initialiser; it seeds the lib's internal key state, which every
     // other primitive depends on.
-    MockObj *sec = jni_mk_bytes((const unsigned char*)TUYA_APP_SECRET, (jsize)strlen(TUYA_APP_SECRET));
-    MockObj *key = jni_mk_bytes((const unsigned char*)TUYA_APP_KEY,    (jsize)strlen(TUYA_APP_KEY));
+    MockObj *sec = jni_mk_bytes((const unsigned char*)cfg->tyAppSecret, (jsize)strlen(cfg->tyAppSecret));
+    MockObj *key = jni_mk_bytes((const unsigned char*)cfg->tyAppKey,    (jsize)strlen(cfg->tyAppKey));
     jobject r = fn(&g_env, sec_class(), mock_ctx(), 0, (jbyteArray)sec, (jbyteArray)key, JNI_FALSE);
     (void)r;   // returns an opaque status object; failures surface downstream
     g_inited = 1;
@@ -119,7 +118,8 @@ char *security_decrypt_response(const char *key, const char *result){
 char *security_get_ch_key(const char *app_key){
     fn_chKey_t fn = (fn_chKey_t)jni_find_native("getChKey");
     if(!fn) return NULL;
-    const char *k = app_key ? app_key : TUYA_APP_KEY;
+    const char *k = app_key;
+    if(!k){ const SbConfig *cfg = sb_config(); if(!cfg) return NULL; k = cfg->tyAppKey; }
     return take_string(fn(&g_env, sec_class(), mock_ctx(),
         (jbyteArray)jni_mk_bytes((const unsigned char*)k, (jsize)strlen(k))));
 }

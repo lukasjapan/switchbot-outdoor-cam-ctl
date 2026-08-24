@@ -92,6 +92,7 @@ switchbot-9.11.15.13-xapk/
   lib/arm64-v8a/*.so
   assets/t_s.bmp
   assets/t_cdc.tcfg
+  assets/switchbot_config.json
   META-INF/BNDLTOOL.RSA
 ```
 

@@ -1,4 +1,5 @@
 #include "cloud.h"
+#include "config.h"
 #include "crypto.h"
 #include "http.h"
 #include "jni_mock.h"   // shared base64 helpers
@@ -45,6 +46,8 @@ static JNode *sb_body(JDoc *d, const char *what){
 
 // ---- stage 1: SwitchBot account login --------------------------------------
 int cloud_switchbot_login(Creds *c, const char *email, const char *password){
+    const SbConfig *cfg = sb_config();
+    if(!cfg) return -1;
     char reqid[37], devuuid[37];
     rand_uuid(reqid);
     snprintf(devuuid, sizeof devuuid, "%s", creds_device_uuid(c));
@@ -57,7 +60,7 @@ int cloud_switchbot_login(Creds *c, const char *email, const char *password){
     jbuf_kv(&b, "username",  email,        &first);
     jbuf_kv(&b, "password",  password,     &first);
     jbuf_kv(&b, "verifyCode", "",          &first);
-    jbuf_kv(&b, "clientId",  SB_CLIENT_ID, &first);
+    jbuf_kv(&b, "clientId",  cfg->clientId, &first);
     jbuf_kv(&b, "grantType", "password",   &first);
     // deviceName/model are self-declared client labels (a user-agent, in effect):
     // they only show up in the account's device list. Session identity is deviceId,
@@ -83,7 +86,9 @@ int cloud_switchbot_login(Creds *c, const char *email, const char *password){
 
     st_info("logging in to SwitchBot…");
     HttpResponse r;
-    int rc = http_request("POST", SB_ACCOUNT_BASE "/account/api/v2/user/login", hdrs, b.buf, &r);
+    char url[256];
+    snprintf(url, sizeof url, "%s/account/api/v2/user/login", cfg->accountBase);
+    int rc = http_request("POST", url, hdrs, b.buf, &r);
     jbuf_free(&b);
     if(rc != 0) return -1;
 
@@ -196,6 +201,8 @@ static int sb_refresh(Creds *c){
         st_err("SwitchBot refresh token has expired — run: switchbot-outdoor-cam-ctl login");
         return -1;
     }
+    const SbConfig *cfg = sb_config();
+    if(!cfg) return -1;
     char reqid[37];
     rand_uuid(reqid);
     char h_req[64];
@@ -214,12 +221,14 @@ static int sb_refresh(Creds *c){
     jbuf_raw(&b, "{");
     int first = 1;
     jbuf_kv(&b, "refreshToken", c->sbRefresh, &first);
-    jbuf_kv(&b, "clientId",     SB_CLIENT_ID, &first);
+    jbuf_kv(&b, "clientId",     cfg->clientId, &first);
     jbuf_raw(&b, "}");
 
     st_info("SwitchBot token expired — refreshing…");
     HttpResponse r;
-    int rc = http_request("POST", SB_ACCOUNT_BASE "/account/api/v1/user/token/refresh", hdrs, b.buf, &r);
+    char url[256];
+    snprintf(url, sizeof url, "%s/account/api/v1/user/token/refresh", cfg->accountBase);
+    int rc = http_request("POST", url, hdrs, b.buf, &r);
     jbuf_free(&b);
     if(rc != 0) return -1;
 
@@ -266,6 +275,8 @@ int cloud_switchbot_ensure_token(Creds *c){
 // ---- stage 2: Tuya shadow account ------------------------------------------
 int cloud_fetch_tuya_account(Creds *c){
     if(cloud_switchbot_ensure_token(c) != 0) return -1;
+    const SbConfig *cfg = sb_config();
+    if(!cfg) return -1;
 
     char reqid[37];
     rand_uuid(reqid);
@@ -283,7 +294,9 @@ int cloud_fetch_tuya_account(Creds *c){
 
     st_info("fetching Tuya account…");
     HttpResponse r;
-    if(http_request("GET", SB_WONDERLABS_BASE "/wonder/ty/v1/account", hdrs, NULL, &r) != 0) return -1;
+    char url[256];
+    snprintf(url, sizeof url, "%s/wonder/ty/v1/account", cfg->wonderlabsBase);
+    if(http_request("GET", url, hdrs, NULL, &r) != 0) return -1;
 
     JDoc *d = json_parse(r.body);
     JNode *body = d ? sb_body(d, "Tuya account lookup") : NULL;
