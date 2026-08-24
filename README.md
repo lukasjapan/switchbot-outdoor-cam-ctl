@@ -122,16 +122,24 @@ android-ndk-r27d-linux/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aar
 
 ### Build, and set up a shortcut
 
-Run both **from this directory**. `$PWD` is expanded as you paste, baking in the
-absolute path, so the alias then works from anywhere:
+From this directory:
 
 ```bash
-docker compose build      # compiles everything inside the image
-alias osc="docker compose -f $PWD/docker-compose.yml run --rm switchbot-outdoor-cam-ctl"
+docker compose build                                      # builds the image
+docker compose run --rm switchbot-outdoor-cam-ctl <args>   # runs one command
 ```
 
-Add the alias to your `~/.zshrc` / `~/.bashrc` to keep it. Everything below uses
-`osc`.
+Build again after changing sources.
+
+Everything below is written as `osc <args>`, a small wrapper around that second
+line — so `osc snapshot --out shot.jpg` and `docker compose run --rm
+switchbot-outdoor-cam-ctl snapshot --out shot.jpg` do the same thing. It adds
+only working from any directory and cleaning up a container Compose can leave
+behind, so it is worth putting on your PATH:
+
+```bash
+ln -s "$PWD/osc" /usr/local/bin/osc     # or anywhere on your PATH
+```
 
 ### Check it works
 
@@ -194,42 +202,75 @@ camera.
 
 ### Commands
 
-Browse what the SD card holds. `list` defaults to the current month, since the
-camera has no bulk index and the tool has to walk the days:
+#### `list` — what's on the SD card
+
+Defaults to the current month; the camera has no bulk index, so listing walks days.
 
 ```bash
-osc list                                # current month
-osc list --year 2026 --month 7          # one specific month
-osc list --from 2026-06 --to 2026-08    # a range of months
-osc list --json                         # same, machine-readable
+osc list
+osc list --year 2026 --month 7
+osc list --from 2026-06 --to 2026-08
+osc list --json
 ```
 
-Then fetch:
+#### `download` — fetch a recording
+
+Addressed by time range, since the firmware reports no ids. Paste the `START_TS`
+straight from `list`, or use local wall-clock.
 
 ```bash
-osc download  --start "2026-08-01 16:14:33" --duration 60 --out clip.mp4
-osc live      --format hd --duration 10 --out live.mp4
-osc snapshot  --out shot.jpg
+osc download --start 1785568473 --duration 60 --out clip.mp4
+osc download --start "2026-08-01 16:14:33" --duration 60 --out clip.mp4
+osc download --start 1785568473 --stop 1785568533 --out clip.mp4
+osc download --start 1785568473 --duration 60 --out - > /tmp/clip.mp4
+```
+
+#### `record` — capture live video to mp4
+
+Fixed duration. Only a finished file is readable — the index lands at the end.
+
+```bash
+osc record --format hd --duration 10 --out clip.mp4
+osc record --duration 10 --out - | ssh nas 'cat > /vol/clip.mp4'
+```
+
+#### `live` — stream until Ctrl-C
+
+Y4M, so no player flags. Uncompressed: ~5 MB/s at `sd`, ~30 MB/s at `hd` — fine
+locally, not over a network.
+
+```bash
+osc live | ffplay -i pipe:0
+osc live --format sd | ffplay -i pipe:0     # 640x360 instead of 1080p
+osc live | tee cam.y4m | ffplay -i pipe:0   # watch and keep
+ffmpeg -i cam.y4m -c:v libx264 cam.mp4      # compress afterwards
+```
+
+#### `snapshot` — single JPEG
+
+```bash
+osc snapshot --out shot.jpg
+osc snapshot --out - | ffmpeg -i - -vf scale=320:-1 -y thumb.jpg
+osc snapshot --out - > /tmp/cam.jpg && open /tmp/cam.jpg
+```
+
+#### `info` — camera capabilities
+
+```bash
 osc info
 ```
 
-`--out -` writes the media to stdout instead, so you can send it anywhere without
-going through `./recordings`:
-
-```bash
-osc download --start 1785568473 --duration 60 --out - > /tmp/clip.mp4
-osc live     --format hd --duration 10 --out - > ./live.mp4
-osc snapshot --out - > ~/Desktop/cam.jpg
-```
-
-Only media goes to stdout — progress and errors go to stderr — so a redirect or a
-pipe gets clean bytes. A failed capture exits non-zero and writes nothing, so
-`osc … --out - > f.mp4 && echo got it` behaves.
-
 Run `osc` with no arguments for the full option list.
 
-- **Output** lands in `./recordings`, unless you use `--out -`.
-- **Timestamps** accept unix epoch seconds (as `list` prints) or local wall-clock.
+- **Output** lands in `./recordings`. `--out -` writes to stdout instead — media
+  only, since progress and errors go to stderr, so pipes and redirects get clean
+  bytes. `live` already defaults to stdout.
+- **`--duration <sec>`** caps `record` and `live`; without it `live` runs until Ctrl-C.
+- **Frame rate is ~15 fps at `sd`, ~10 at `hd`** — the SDK decodes in software
+  under emulation.
+- **`record` has no audio track.** `download` does, since the SD card keeps it,
+  but camera audio is muted by default on the live path and the SDK's unmute call
+  segfaults under emulation. Unresolved — see `camera_set_mute()` in `camera.c`.
 - With `OUTDOOR_CAM_DEV_ID` set, `osc selftest` also brings up the signaling
   transport against that camera. To get the plain no-account check back, blank it
   for one command: `OUTDOOR_CAM_DEV_ID= osc selftest`.

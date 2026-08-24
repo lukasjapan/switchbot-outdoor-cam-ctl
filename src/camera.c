@@ -21,6 +21,7 @@ typedef jlong (*fn_createSimple_t)(JNIEnv*, jclass, jstring, jint, jstring, jobj
 typedef jint  (*fn_connect_t)(JNIEnv*, jclass, jlong, jstring, jstring, jstring, jstring, jstring, jboolean, jint);
 typedef jint  (*fn_startPreview_t)(JNIEnv*, jclass, jlong, jint, jobject);
 typedef jint  (*fn_stopPreview_t)(JNIEnv*, jclass, jlong, jobject);
+typedef jint  (*fn_setMute_t)(JNIEnv*, jclass, jlong, jint);
 typedef jint  (*fn_disconnect_t)(JNIEnv*, jclass, jlong, jboolean);
 typedef jint  (*fn_destroy_t)(JNIEnv*, jclass, jlong);
 typedef jint  (*fn_setEncryptionInfo_t)(JNIEnv*, jclass, jlong, jstring);
@@ -105,6 +106,10 @@ static void feed_signaling(const char *json, void *user){
     fn(&g_env, (jobject)klass, (jstring)jni_mk_string(json), (jint)strlen(json));
     st_debug("signaling fed to SDK (%zu bytes)", strlen(json));
 }
+
+// Where decoded frames go while a preview runs, if anyone asked for them.
+static camera_frame_fn g_frame_sink;
+void camera_set_frame_sink(camera_frame_fn fn){ g_frame_sink = fn; }
 
 // ---- SDK -> us -------------------------------------------------------------
 // Outbound signaling plus session-state notifications. Argument layouts mirror
@@ -219,6 +224,25 @@ static void on_void_callback(const char *method, MockObj *self, va_list *ap){
         }
         return;
     }
+    // ThingCameraListener.onVideoFrameRecved(int, ByteBuffer y, ByteBuffer u,
+    //   ByteBuffer v, ThingCameraVideoFrame) — one decoded frame, as three
+    // planes. The trailing frame-info object carries width/height/keyframe, but
+    // the SDK passes those to its constructor and our J_NewObject discards
+    // constructor arguments, so the geometry has to come from the caller (which
+    // knows the clarity it asked for) and is cross-checked against the plane
+    // sizes in stream.c.
+    if(!strcmp(method, "onVideoFrameRecved")){
+        if(!ap || !g_frame_sink) return;
+        (void)va_arg(*ap, int);                 // which port/handle
+        MockObj *y = va_arg(*ap, MockObj*);
+        MockObj *u = va_arg(*ap, MockObj*);
+        MockObj *v = va_arg(*ap, MockObj*);
+        if(y && u && v && y->bytes && u->bytes && v->bytes)
+            g_frame_sink(y->bytes, (size_t)y->len,
+                         u->bytes, (size_t)u->len,
+                         v->bytes, (size_t)v->len);
+        return;
+    }
     st_debug("unhandled SDK callback: %s", method);
 }
 
@@ -247,6 +271,20 @@ int camera_clarity_from_format(const char *fmt){
     if(!strcasecmp(fmt, "hd")) return CAM_CLARITY_HD;
     st_warn("unknown --format '%s'; using hd (valid: hd, sd)", fmt);
     return CAM_CLARITY_HD;
+}
+
+// Expected decoded geometry and nominal frame rate per clarity. These go into the
+// Y4M header `live` writes, so they have to be right — the frame-info object the
+// SDK passes alongside each frame does carry the real width/height, but it arrives
+// as constructor arguments that the JNI mock does not retain.
+//
+// The rates are measured, not from a spec: SD sustains roughly 15 fps, while HD
+// runs slower because 1080p HEVC is being decoded in software under emulation.
+void camera_format_geometry(const char *fmt, int *w, int *h, int *fps){
+    int sd = camera_clarity_from_format(fmt) == CAM_CLARITY_SD;
+    if(w)   *w   = sd ? 640 : 1920;
+    if(h)   *h   = sd ? 360 : 1080;
+    if(fps) *fps = sd ? 15  : 10;
 }
 
 Camera *camera_open(const CredDevice *dev, Signaling *sg, const char *local_id){
@@ -352,6 +390,26 @@ int camera_start_preview(Camera *cam, int clarity){
     MockObj *cb = jni_mk_object("com/thingclips/smart/camera/callback/ThingBaseCallback", cam);
     jint rc = fn(&g_env, cam_class(), cam->handle, (jint)clarity, (jobject)cb);
     st_debug("startPreview(clarity=%d) -> %d", clarity, (int)rc);
+    return rc >= 0 ? 0 : -1;
+}
+
+// ThingCameraNative.setMute(long, int) — ICameraP2P.MUTE = 1, UNMUTE = 0.
+// Camera audio starts muted, so a recording made without this has a video track
+// and nothing else. Playback (download) is unaffected: it carries whatever the
+// SD card holds.
+//
+// WARNING: calling this under qemu segfaults inside the SDK (null deref) — it is
+// not wired into any command yet. The signature is right (the app calls the same
+// native directly, ThingCameraImpl.setMute), and there is no missing prerequisite
+// at the Java layer: IPCThingP2PCamera.audioOpen() is an empty method. Something
+// in the native audio path is uninitialised in this environment. Kept because the
+// wrapper is correct and the next attempt should start here.
+int camera_set_mute(Camera *cam, int mute){
+    if(!cam) return -1;
+    fn_setMute_t fn = (fn_setMute_t)cam_sym("setMute");
+    if(!fn){ st_debug("camera SDK: no setMute export"); return -1; }
+    jint rc = fn(&g_env, cam_class(), cam->handle, (jint)mute);
+    st_debug("setMute(%d) -> %d", mute, (int)rc);
     return rc >= 0 ? 0 : -1;
 }
 

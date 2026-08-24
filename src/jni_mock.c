@@ -131,12 +131,16 @@ static jobject route_obj(MockMember *m, MockObj *self, va_list *ap){
 static jint route_int(MockMember *m, MockObj *self, va_list *ap){
     const char *name = m ? m->name : NULL;
     if(g_int_fn){ int handled = 0; jint r = g_int_fn(name, self, ap, &handled); if(handled) return r; }
+    // 0 is "success" for most of these, so an unhandled call looks like it worked.
+    // Name it under -v, or a missing handler is invisible.
+    JLOGF("int call (unhandled -> 0): %s%s%s", name ? name : "?",
+          m && m->sig ? " " : "", m && m->sig ? m->sig : "");
     return 0;
 }
 
 // ---- JNIEnv shims ---------------------------------------------------------
 static jint     J_GetVersion(JNIEnv*e){(void)e; return JNI_VERSION_1_6;}
-static jclass   J_FindClass(JNIEnv*e,const char*n){(void)e; return (jclass)jni_mk(M_CLASS,n);}
+static jclass   J_FindClass(JNIEnv*e,const char*n){(void)e; JLOGF("FindClass %s", n?n:"?"); return (jclass)jni_mk(M_CLASS,n);}
 static jclass   J_GetObjectClass(JNIEnv*e,jobject o){(void)e; MockObj*m=(MockObj*)o; return (jclass)jni_mk(M_CLASS,m?m->name:"java/lang/Object");}
 static jboolean J_IsInstanceOf(JNIEnv*e,jobject o,jclass c){(void)e;(void)o;(void)c; return JNI_TRUE;}
 static jboolean J_IsSameObject(JNIEnv*e,jobject a,jobject b){(void)e; return a==b;}
@@ -193,11 +197,20 @@ static jchar   J_CallCharMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(voi
 static jshort  J_CallShortMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(void)o;(void)m; return 0;}
 static jfloat  J_CallFloatMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(void)o;(void)m; return 0;}
 static jdouble J_CallDoubleMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(void)o;(void)m; return 0;}
-static jboolean J_CallBooleanMethodV(JNIEnv*e,jobject o,jmethodID m,va_list a){(void)e;(void)o;(void)m;(void)a; return JNI_FALSE;}
-static jlong    J_CallLongMethodV(JNIEnv*e,jobject o,jmethodID m,va_list a){(void)e;(void)o;(void)m;(void)a; return 0;}
-static jint     J_CallStaticIntMethod(JNIEnv*e,jclass c,jmethodID m,...){(void)e;(void)c;(void)m; return 0;}
-static jboolean J_CallStaticBooleanMethod(JNIEnv*e,jclass c,jmethodID m,...){(void)e;(void)c;(void)m; return JNI_FALSE;}
-static jlong    J_CallStaticLongMethod(JNIEnv*e,jclass c,jmethodID m,...){(void)e;(void)c;(void)m; return 0;}
+// Unrouted Call* variants. They still answer with a default, but they now say so
+// under -v: a silent JNI_FALSE here is indistinguishable from "the SDK never
+// asked", which is exactly the ambiguity that hides a missing handler.
+static void log_unrouted(const char *ret, jmethodID m){
+    MockMember *mm = (MockMember*)m;
+    JLOGF("unrouted %s call: %s%s%s", ret,
+          mm && mm->name ? mm->name : "?",
+          mm && mm->sig ? " " : "", mm && mm->sig ? mm->sig : "");
+}
+static jboolean J_CallBooleanMethodV(JNIEnv*e,jobject o,jmethodID m,va_list a){(void)e;(void)o;(void)a; log_unrouted("boolean",m); return JNI_FALSE;}
+static jlong    J_CallLongMethodV(JNIEnv*e,jobject o,jmethodID m,va_list a){(void)e;(void)o;(void)a; log_unrouted("long",m); return 0;}
+static jint     J_CallStaticIntMethod(JNIEnv*e,jclass c,jmethodID m,...){(void)e;(void)c; log_unrouted("static int",m); return 0;}
+static jboolean J_CallStaticBooleanMethod(JNIEnv*e,jclass c,jmethodID m,...){(void)e;(void)c; log_unrouted("static boolean",m); return JNI_FALSE;}
+static jlong    J_CallStaticLongMethod(JNIEnv*e,jclass c,jmethodID m,...){(void)e;(void)c; log_unrouted("static long",m); return 0;}
 
 // Strings / arrays the SDK may reach for while shuttling frames.
 static jstring J_NewString(JNIEnv*e,const jchar*u,jsize n){(void)e;(void)u;(void)n; return (jstring)jni_mk_string("");}
@@ -230,8 +243,8 @@ static void J_CallStaticVoidMethodA(JNIEnv*e,jclass c,jmethodID m,const jvalue*a
 static jint J_CallIntMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e; va_list a; va_start(a,m); jint r=route_int((MockMember*)m,(MockObj*)o,&a); va_end(a); return r;}
 static jint J_CallIntMethodV(JNIEnv*e,jobject o,jmethodID m,va_list a){(void)e; return route_int((MockMember*)m,(MockObj*)o,&a);}
 static jint J_CallIntMethodA(JNIEnv*e,jobject o,jmethodID m,const jvalue*a){(void)e;(void)a; return route_int((MockMember*)m,(MockObj*)o,NULL);}
-static jboolean J_CallBooleanMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(void)o;(void)m; return JNI_FALSE;}
-static jlong J_CallLongMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(void)o;(void)m; return 0;}
+static jboolean J_CallBooleanMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(void)o; log_unrouted("boolean",m); return JNI_FALSE;}
+static jlong J_CallLongMethod(JNIEnv*e,jobject o,jmethodID m,...){(void)e;(void)o; log_unrouted("long",m); return 0;}
 
 static jobject J_NewObject(JNIEnv*e,jclass c,jmethodID m,...){(void)e;(void)m; MockObj*mm=(MockObj*)c; return (jobject)jni_mk(M_OBJECT,mm?mm->name:"java/lang/Object");}
 static jobject J_NewObjectV(JNIEnv*e,jclass c,jmethodID m,va_list a){(void)a; return J_NewObject(e,c,m);}

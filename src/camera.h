@@ -33,6 +33,23 @@ int camera_connect(Camera *cam, const char *auth_pwd, int is_lan, int timeout_ms
 int camera_start_preview(Camera *cam, int clarity);
 int camera_stop_preview(Camera *cam);
 
+// Camera audio is muted by default on the live path, so a recording taken
+// without unmuting has no audio track at all. 0 = unmute, 1 = mute.
+int camera_set_mute(Camera *cam, int mute);
+
+// Decoded-frame sink. While a preview runs, the SDK calls
+// ThingCameraListener.onVideoFrameRecved(int, ByteBuffer y, ByteBuffer u,
+// ByteBuffer v, ThingCameraVideoFrame) for every frame it has decoded. Install a
+// sink to receive those three planes; without one the frames are dropped, which
+// is what happened for the entire life of this tool until now.
+//
+// NB: called on the SDK's own frame thread, and the plane pointers are only
+// valid for the duration of the call.
+typedef void (*camera_frame_fn)(const unsigned char *y, size_t ylen,
+                                const unsigned char *u, size_t ulen,
+                                const unsigned char *v, size_t vlen);
+void camera_set_frame_sink(camera_frame_fn fn);
+
 // Record the running stream straight to MP4. The SDK does the muxing (its JNI
 // listener only exposes decoded YUV planes, so handling frames ourselves would
 // mean re-encoding). `folder` is created if needed; ".mp4" is appended to
@@ -79,5 +96,6 @@ void camera_close(Camera *cam);
 
 // Map a --format value to a clarity constant (HD default).
 int camera_clarity_from_format(const char *fmt);
+void camera_format_geometry(const char *fmt, int *w, int *h, int *fps);
 
 #endif

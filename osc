@@ -1,0 +1,19 @@
+#!/bin/sh
+# Run switchbot-outdoor-cam-ctl in its container.
+# Symlink onto your PATH:  ln -s "$PWD/osc" /usr/local/bin/osc
+#
+# Add --build to the run below if you would rather never rebuild by hand; it costs
+# about 6s per command even when nothing changed.
+set -u
+cd "$(dirname "$(readlink -f "$0")")" || exit 1
+
+name=osc-$$
+docker compose run --rm --name "$name" switchbot-outdoor-cam-ctl "$@"
+rc=$?
+
+# Reap the container if the docker CLI died first, which is why it gets a name at
+# all: in `osc live | ffplay`, quitting the player kills the CLI too, so its --rm
+# never runs and the container is left alive holding the camera's P2P session —
+# and the next command cannot connect until it goes away. No-op on a normal exit.
+docker rm -f "$name" >/dev/null 2>&1
+exit $rc

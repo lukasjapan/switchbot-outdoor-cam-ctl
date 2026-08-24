@@ -17,7 +17,10 @@
 #include "security.h"
 #include "signaling.h"
 #include "status.h"
+#include "stream.h"
 
+#include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +28,35 @@
 #include <unistd.h>
 
 int g_status_verbose = 0;
+
+// ---- interruption ----------------------------------------------------------
+// `live` runs until told to stop, so Ctrl-C has to be a request rather than a
+// kill: the camera session must be closed through the normal path, otherwise it
+// stays open server-side and the next command has to wait it out.
+static volatile sig_atomic_t g_stop;
+static void on_signal(int sig){ (void)sig; g_stop = 1; }
+
+// NB: a consumer dying on the far end of `docker compose run … | player` cannot be
+// detected from in here, and it is worth recording why so nobody retries it:
+//   - it never arrives as EPIPE — the broken pipe is between the docker CLI and
+//     that consumer, outside the container;
+//   - the daemon goes on draining (and discarding) our stdout indefinitely, so
+//     writes keep succeeding and frames keep flowing (measured: 60+ frames well
+//     after the consumer exited), which rules out both write errors and stalls;
+//   - stdin is no help either: under `docker compose run` it already polls
+//     POLLHUP at startup, so it cannot distinguish a live client from a dead one.
+// The orphan therefore has to be cleaned up host-side — see the `osc` wrapper,
+// which force-removes the container once the CLI exits.
+static void install_signal_handlers(void){
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_signal;
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    // Streaming into `head` or a player that exits must not kill us mid-frame;
+    // stream.c notices the EPIPE and stops cleanly instead.
+    signal(SIGPIPE, SIG_IGN);
+}
 
 // ---- argument parsing ------------------------------------------------------
 typedef struct {
@@ -65,9 +97,14 @@ static void usage(FILE *f){
 "             seconds, as `list` prints, or local wall-clock:\n"
 "               --start 1785568473\n"
 "               --start \"2026-08-01 16:14:33\"   --start 2026-08-01T16:14:33\n"
-"  live       --dev-id <id> [--format hd|sd] [--duration <sec>]\n"
-"             [--out <file|->]         Live view. hd = 1080p HEVC (default),\n"
+"  record     --dev-id <id> [--format hd|sd] [--duration <sec>]\n"
+"             [--out <file|->]         Record to mp4. hd = 1080p HEVC (default),\n"
 "                                      sd = 640x360 H.264.\n"
+"  live       --dev-id <id> [--format hd|sd] [--duration <sec>]\n"
+"             [--out <file|->]         Stream until Ctrl-C, as Y4M (the SDK only\n"
+"                                      exposes decoded frames, so this is\n"
+"                                      uncompressed). Self-describing:\n"
+"                                        live --format sd | ffplay -i pipe:0\n"
 "  snapshot   --dev-id <id> [--out <file|->]     Single JPEG.\n"
 "  info       --dev-id <id>                      Camera capability JSON.\n"
 "  selftest   Load the native stack and initialise the engine (bring-up check).\n"
@@ -490,8 +527,12 @@ static int session_attempts(void){
     return n > 0 ? n : 1;
 }
 
-static int cmd_live(const Opts *o){
-    if(!o->dev_id){ st_err("live needs --dev-id <id>"); return 2; }
+// ---- record ----------------------------------------------------------------
+// Fixed-duration mp4. Writes straight to the destination path as the frames
+// arrive; only "--out -" has to stage, because the SDK's muxer patches the mdat
+// size when it finalises and a pipe cannot be seeked back.
+static int cmd_record(const Opts *o){
+    if(!o->dev_id){ st_err("record needs --dev-id <id>"); return 2; }
 
     CamSession S;
     if(session_open(&S, o->dev_id, session_attempts()) != 0) return 1;
@@ -505,9 +546,16 @@ static int cmd_live(const Opts *o){
                 st_info("[step] preview started");
                 char dir[512], name[256];
                 int to_stdout = 0;
-                resolve_out(o->out, "live.mp4", dir, sizeof dir, name, sizeof name, &to_stdout);
+                resolve_out(o->out, "record.mp4", dir, sizeof dir, name, sizeof name, &to_stdout);
                 st_debug("destination dir=%s name=%s", dir, name);
 
+                // NB: recordings have no audio track because camera audio is
+                // muted by default, but camera_set_mute(cam, 0) here segfaults
+                // inside the SDK (null deref). Not an ordering problem at the
+                // Java layer — IPCThingP2PCamera.audioOpen() is an empty method,
+                // so there is no prerequisite call we are skipping. Left alone
+                // until the native side is understood; see camera_set_mute().
+                //
                 // Let the stream settle and produce a keyframe before recording,
                 // otherwise the mp4 can start with an undecodable gap.
                 usleep(1500000);
@@ -532,6 +580,74 @@ static int cmd_live(const Opts *o){
             } else st_err("[step] preview failed to start");
         }
     }
+    session_close(&S);
+    return status;
+}
+
+// ---- live ------------------------------------------------------------------
+// Continuous stream until Ctrl-C. The camera SDK's listener only ever offers
+// *decoded* frames (three I420 planes — see the frame sink in camera.h), so
+// there is no container and no encoder in the path: the planes go straight to
+// the destination, flushed per frame.
+static int cmd_live(const Opts *o){
+    if(!o->dev_id){ st_err("live needs --dev-id <id>"); return 2; }
+
+    int clarity = camera_clarity_from_format(o->format);
+    int w = 0, h = 0, fps = 0;
+    camera_format_geometry(o->format, &w, &h, &fps);
+
+    CamSession S;
+    if(session_open(&S, o->dev_id, session_attempts()) != 0) return 1;
+    Camera *cam = S.cam;
+    int status = 1;
+
+    if(stream_open(o->out, w, h, fps) != 0){ session_close(&S); return 1; }
+
+    st_info("[step] starting preview…");
+    if(camera_start_preview(cam, clarity) == 0){
+        st_info("[step] preview started");
+        camera_set_frame_sink(stream_write_frame);
+
+        // --duration is an optional cap; without it this runs until interrupted,
+        // the destination goes away, or the frames dry up.
+        //
+        // The stall check is what catches a dead consumer. When the far end of a
+        // `docker compose run` pipe exits, we never see EPIPE — the break is
+        // between the docker CLI and that consumer, outside the container — and
+        // the SDK simply stops handing us frames. Without this the container sits
+        // there holding the camera session until --duration elapses, or forever.
+        // Only armed once frames have actually started, because HD can take tens
+        // of seconds to produce its first one.
+        const long long STALL_TICKS = 40;            // 10 s at 250 ms/tick
+        long long ticks = 0, cap = o->duration > 0 ? (long long)o->duration * 4 : -1;
+        long long last_change = 0;
+        long seen = 0, reported = -1;
+        int stalled = 0;
+        while(!g_stop && !stream_broken() && (cap < 0 || ticks < cap)){
+            usleep(250000);
+            ticks++;
+            long n = stream_frame_count();
+            if(n != seen){ seen = n; last_change = ticks; }
+            else if(seen > 0 && ticks - last_change >= STALL_TICKS){ stalled = 1; break; }
+            if((ticks % 8) == 0 && n != reported){ st_debug("%ld frames", n); reported = n; }
+        }
+        if(g_stop)       st_info("interrupted");
+        else if(stalled) st_err("no new frames for %llds — stream stalled; stopping",
+                                STALL_TICKS / 4);
+
+        // Detach before tearing down, so a frame in flight cannot land on a
+        // closed destination.
+        camera_set_frame_sink(NULL);
+        st_info("[step] stopping preview…");
+        camera_stop_preview(cam);
+        st_info("[step] preview stopped");
+
+        long n = stream_frame_count();
+        if(n > 0){ st_info("%ld frames streamed", n); status = 0; }
+        else st_err("no frames arrived — the SDK decoded nothing at this clarity");
+    } else st_err("[step] preview failed to start");
+
+    stream_close();
     session_close(&S);
     return status;
 }
@@ -824,6 +940,7 @@ static int cmd_snapshot(const Opts *o){
 
 int main(int argc, char **argv){
     setvbuf(stderr, NULL, _IOLBF, 0);
+    install_signal_handlers();
     if(getenv("VERBOSE") && *getenv("VERBOSE")){ g_status_verbose = 1; g_verbose = 1; }
 
     Opts o;
@@ -848,6 +965,7 @@ int main(int argc, char **argv){
     if(!strcmp(o.cmd, "login"))    return cmd_login(&o);
     if(!strcmp(o.cmd, "list"))     return cmd_list(&o);
     if(!strcmp(o.cmd, "download")) return cmd_download(&o);
+    if(!strcmp(o.cmd, "record"))   return cmd_record(&o);
     if(!strcmp(o.cmd, "live"))     return cmd_live(&o);
     if(!strcmp(o.cmd, "snapshot")) return cmd_snapshot(&o);
     if(!strcmp(o.cmd, "info"))     return cmd_info(&o);
