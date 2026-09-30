@@ -237,37 +237,41 @@ osc record --duration 10 --out - | ssh nas 'cat > /vol/clip.mp4'
 
 #### `live` — stream until Ctrl-C or the player closes
 
-Y4M by default, so no player flags. The SDK decodes the camera's video in software
-under emulation and hands back I420, so this is uncompressed (~5 MB/s at `sd`, ~30
-MB/s at `hd`) and costly: ~15 fps at `sd` on a Mac, but ~8.5 on the Pi, ~10 at `hd`.
+Writes to stdout. Two output formats:
+
+| | default | `--native` |
+| --- | --- | --- |
+| container | Y4M (uncompressed `yuv420p`) | none — Annex-B elementary stream |
+| `--format hd` | 1920x1080 | H.265, 1920x1080 |
+| `--format sd` | 640x360 | H.264, 640x360 |
+
+**Default (Y4M).** The stream describes itself, so players and ffmpeg need no flags:
 
 ```bash
 osc live | ffplay -
-osc live --format sd | ffplay -             # 640x360 instead of 1080p
-osc live | tee cam.y4m | ffplay -           # watch and keep
-ffmpeg -i cam.y4m -c:v libx264 cam.mp4      # compress afterwards
+osc live --format sd | ffplay -
+osc live | tee cam.y4m | ffplay -                        # watch and keep
+ffmpeg -i cam.y4m -c:v libx264 cam.mp4                   # compress afterwards
 ```
 
-`--native` streams the camera's own video instead, untouched: an Annex-B elementary
-stream, H.265 1920x1080 at `hd`, H.264 640x360 at `sd`, both 15 fps. Nothing is
-decoded along the way, so it costs about what the P2P transport costs, and it is
-small enough (~0.35 Mbit/s at `sd`) to send anywhere. Elementary streams carry no
-container and no timing, so tell the player the codec and the rate (without
-`-framerate 15` ffplay assumes 25):
+**`--native`.** The camera's video exactly as it sends it. There is no container
+and no timestamps, so tell the reader the codec (`-f hevc` for `hd`, `-f h264` for
+`sd`) and the frame rate (`-framerate 15`; without it ffmpeg assumes 25):
 
 ```bash
 osc live --native | ffplay -f hevc -framerate 15 -
 osc live --native --format sd | ffplay -f h264 -framerate 15 -
 osc live --native --format sd > cam.h264                 # keep it
-ffmpeg -f h264 -framerate 15 -i cam.h264 -c copy cam.mp4 # into a container, no re-encode
+ffmpeg -f h264 -framerate 15 -i cam.h264 -c copy cam.mp4 # into mp4, no re-encode
 ```
 
-How `--native` works: it never starts the SDK's preview. It sends the commands
-`ThingCameraSimple::StartPreview` would (set clarity 9/0, start video 6/0; stop
-video 6/3 on the way out) straight through `ThingP2PSendData`, and takes the media
-channel over from the SDK's own reader by exporting `ThingP2PRecvData` from the
-executable, which the loader binds the SDK's import to. Details in
-`src/rawmedia.c`.
+It stops on Ctrl-C, after `--duration <sec>`, or when whatever reads it exits —
+close the ffplay window and the camera session is released shortly after. It also
+gives up if no video arrives within 60 s.
+
+A `--native` capture cut short usually ends in the middle of a group of pictures,
+so ffmpeg warns about the last access unit ("missing picture in access unit").
+Everything before it is intact.
 
 #### `snapshot` — single JPEG
 
@@ -288,15 +292,7 @@ Run `osc` with no arguments for the full option list.
 - **Output** lands in `./recordings`. `--out -` writes to stdout instead — media
   only, since progress and errors go to stderr, so pipes and redirects get clean
   bytes. `live` already defaults to stdout.
-- **`--duration <sec>`** caps `record` and `live`; without it `live` runs until Ctrl-C
-  or until whatever it pipes into goes away — close the ffplay window and the camera
-  session is released within ~15 s.
-- **`live` gives up if nothing arrives within 60 s.** It can only notice a closed
-  player by writing to it, so a camera that never sends a frame would otherwise hold
-  the session indefinitely.
-- **`live --native` streams stop on a partial GOP.** A capture cut by `--duration` or
-  Ctrl-C usually ends with an SPS/PPS and no picture after it; ffmpeg warns
-  ("missing picture in access unit") and every earlier frame is fine.
+- **`--duration <sec>`** caps `record` and `live`.
 - **`record` has no audio track.** `download` does, since the SD card keeps it,
   but camera audio is muted by default on the live path and the SDK's unmute call
   segfaults under emulation. Unresolved — see `camera_set_mute()` in `camera.c`.
