@@ -29,7 +29,12 @@ Camera *camera_open(const CredDevice *dev, Signaling *sg, const char *local_id);
 // `timeout_ms` for the session to come up. 0 on success.
 int camera_connect(Camera *cam, const char *auth_pwd, int is_lan, int timeout_ms);
 
-// Live preview. Frames arrive on the SDK's listener callbacks.
+// The P2P SDK's handle for this session (what ThingP2PSendData/RecvData take),
+// for the encoded `live` path. -1 until connected.
+int camera_p2p_session(Camera *cam);
+
+// Live preview through the SDK: this also starts its software decoder, and frames
+// arrive decoded on the listener callbacks. Only `live --raw` wants that.
 int camera_start_preview(Camera *cam, int clarity);
 int camera_stop_preview(Camera *cam);
 

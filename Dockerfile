@@ -47,6 +47,8 @@ COPY mocks ./mocks
 # Compiled with src/*.c as a glob (camctl carried a hand-maintained file list
 # that named a mux.c which does not exist). No -lpthread: bionic folds pthread
 # into libc, so the flag does not exist there.
+# ThingP2PRecvData is exported so the camera SDK's import of it binds to ours
+# (src/rawmedia.c): that is how the encoded `live` takes over the media channel.
 RUN --mount=type=bind,from=ndk,target=/ndk \
     set -eu; \
     CCDIR=/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin; \
@@ -61,6 +63,7 @@ RUN --mount=type=bind,from=ndk,target=/ndk \
     mkdir -p /out; \
     echo "== switchbot-outdoor-cam-ctl =="; \
     "$CC" -O2 -Wall -Wextra -fPIE -pie -Isrc src/*.c -ldl \
+          -Wl,--export-dynamic-symbol=ThingP2PRecvData \
           -o /out/switchbot-outdoor-cam-ctl; \
     echo "== liblog shim =="; \
     "$CC" -O2 -Wall -shared -fPIC -Wl,-soname,liblog.so \

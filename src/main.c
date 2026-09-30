@@ -15,6 +15,7 @@
 #include "jni_mock.h"
 #include "json.h"
 #include "native.h"
+#include "rawmedia.h"
 #include "security.h"
 #include "signaling.h"
 #include "status.h"
@@ -71,6 +72,7 @@ typedef struct {
     int duration;
     const char *start_s, *stop_s;
     int json, show_secrets;
+    int raw;              // live: decoded Y4M via the SDK instead of the camera's own stream
 } Opts;
 
 static void usage(FILE *f){
@@ -101,11 +103,13 @@ static void usage(FILE *f){
 "  record     --dev-id <id> [--format hd|sd] [--duration <sec>]\n"
 "             [--out <file|->]         Record to mp4. hd = 1080p HEVC (default),\n"
 "                                      sd = 640x360 H.264.\n"
-"  live       --dev-id <id> [--format hd|sd] [--duration <sec>]\n"
-"             [--out <file|->]         Stream until Ctrl-C, as Y4M (the SDK only\n"
-"                                      exposes decoded frames, so this is\n"
-"                                      uncompressed). Self-describing:\n"
-"                                        live --format sd | ffplay -i pipe:0\n"
+"  live       --dev-id <id> [--format hd|sd] [--duration <sec>] [--raw]\n"
+"             [--out <file|->]         Stream until Ctrl-C: the camera's own video\n"
+"                                      as Annex-B, H.265 at hd, H.264 at sd:\n"
+"                                        live --format sd | ffplay -f h264 -framerate 15 -\n"
+"                                        live | ffplay -f hevc -framerate 15 -\n"
+"                                      --raw: decoded by the SDK, as Y4M (costly;\n"
+"                                        live --raw | ffplay -i pipe:0)\n"
 "  snapshot   --dev-id <id> [--out <file|->]     Single JPEG.\n"
 "  info       --dev-id <id>                      Camera capability JSON.\n"
 "  selftest   Load the native stack and initialise the engine (bring-up check).\n"
@@ -164,6 +168,7 @@ static int parse_args(int argc, char **argv, Opts *o){
         #undef OPT_LONG
         if(!strcmp(a, "--json")){ o->json = 1; continue; }
         if(!strcmp(a, "--show-secrets")){ o->show_secrets = 1; continue; }
+        if(!strcmp(a, "--raw")){ o->raw = 1; continue; }
         if(!strcmp(a, "-v") || !strcmp(a, "--verbose")){ g_status_verbose = 1; g_verbose = 1; continue; }
         if(!strcmp(a, "-h") || !strcmp(a, "--help")){ usage(stdout); exit(0); }
         st_err("unknown option '%s'", a);
@@ -589,55 +594,59 @@ static int cmd_record(const Opts *o){
 }
 
 // ---- live ------------------------------------------------------------------
-// Continuous stream until Ctrl-C. The camera SDK's listener only ever offers
-// *decoded* frames (three I420 planes — see the frame sink in camera.h), so
-// there is no container and no encoder in the path: the planes go straight to
-// the destination, flushed per frame.
-static int cmd_live(const Opts *o){
-    if(!o->dev_id){ st_err("live needs --dev-id <id>"); return 2; }
+// Continuous stream until Ctrl-C, in one of two shapes:
+//
+//   default  The camera's own encoded video (Annex-B H.264 at sd, H.265 at hd),
+//            read off the P2P session by rawmedia.c. The SDK's preview is never
+//            started, so nothing is decoded — the whole point, since that decode
+//            runs in software under emulation.
+//   --raw    The SDK's preview: its listener only offers *decoded* frames (three
+//            I420 planes — see the frame sink in camera.h), written as Y4M.
 
-    int clarity = camera_clarity_from_format(o->format);
-    int w = 0, h = 0, fps = 0;
+// Runs until interrupted, --duration, the destination goes away, or output dries
+// up. The stall check is what catches a dead consumer. When the far end of a
+// `docker compose run` pipe exits, we never see EPIPE — the break is between the
+// docker CLI and that consumer, outside the container — and output simply stops
+// moving. Without this the container sits there holding the camera session until
+// --duration elapses, or forever. Only armed once output has actually started,
+// because HD can take tens of seconds to produce its first frame.
+//
+// Before that, a separate, longer limit. Output that never starts is also how a
+// closed player looks, since we only learn the consumer is gone by writing to it:
+// on a poor link `live --raw | ffplay` was seen still holding the session a minute
+// after the window was closed, because the camera had not sent a single frame.
+static void live_wait(const Opts *o){
+    const long long STALL_TICKS = 40;            // 10 s at 250 ms/tick
+    const long long START_TICKS = 240;           // 60 s for the first output
+    long long ticks = 0, cap = o->duration > 0 ? (long long)o->duration * 4 : -1;
+    long long last_change = 0;
+    long seen = 0, reported = -1;
+    int stalled = 0;
+    while(!g_stop && !stream_broken() && (cap < 0 || ticks < cap)){
+        usleep(250000);
+        ticks++;
+        long n = stream_frame_count();
+        if(n != seen){ seen = n; last_change = ticks; }
+        else if(seen > 0 && ticks - last_change >= STALL_TICKS){ stalled = 1; break; }
+        else if(seen == 0 && ticks >= START_TICKS){ stalled = 2; break; }
+        if((ticks % 8) == 0 && n != reported){ st_debug("%ld units", n); reported = n; }
+    }
+    if(g_stop)       st_info("interrupted");
+    else if(stalled == 1) st_err("no new output for %llds — stream stalled; stopping",
+                                 STALL_TICKS / 4);
+    else if(stalled == 2) st_err("nothing arrived within %llds — giving up", START_TICKS / 4);
+}
+
+static int live_decoded(const Opts *o, Camera *cam, int clarity){
+    int w = 0, h = 0, fps = 0, status = 1;
     camera_format_geometry(o->format, &w, &h, &fps);
-
-    CamSession S;
-    if(session_open(&S, o->dev_id, session_attempts()) != 0) return 1;
-    Camera *cam = S.cam;
-    int status = 1;
-
-    if(stream_open(o->out, w, h, fps) != 0){ session_close(&S); return 1; }
+    if(stream_open(o->out, w, h, fps) != 0) return 1;
 
     st_info("[step] starting preview…");
     if(camera_start_preview(cam, clarity) == 0){
         st_info("[step] preview started");
         camera_set_frame_sink(stream_write_frame);
-
-        // --duration is an optional cap; without it this runs until interrupted,
-        // the destination goes away, or the frames dry up.
-        //
-        // The stall check is what catches a dead consumer. When the far end of a
-        // `docker compose run` pipe exits, we never see EPIPE — the break is
-        // between the docker CLI and that consumer, outside the container — and
-        // the SDK simply stops handing us frames. Without this the container sits
-        // there holding the camera session until --duration elapses, or forever.
-        // Only armed once frames have actually started, because HD can take tens
-        // of seconds to produce its first one.
-        const long long STALL_TICKS = 40;            // 10 s at 250 ms/tick
-        long long ticks = 0, cap = o->duration > 0 ? (long long)o->duration * 4 : -1;
-        long long last_change = 0;
-        long seen = 0, reported = -1;
-        int stalled = 0;
-        while(!g_stop && !stream_broken() && (cap < 0 || ticks < cap)){
-            usleep(250000);
-            ticks++;
-            long n = stream_frame_count();
-            if(n != seen){ seen = n; last_change = ticks; }
-            else if(seen > 0 && ticks - last_change >= STALL_TICKS){ stalled = 1; break; }
-            if((ticks % 8) == 0 && n != reported){ st_debug("%ld frames", n); reported = n; }
-        }
-        if(g_stop)       st_info("interrupted");
-        else if(stalled) st_err("no new frames for %llds — stream stalled; stopping",
-                                STALL_TICKS / 4);
+        live_wait(o);
 
         // Detach before tearing down, so a frame in flight cannot land on a
         // closed destination.
@@ -652,6 +661,44 @@ static int cmd_live(const Opts *o){
     } else st_err("[step] preview failed to start");
 
     stream_close();
+    return status;
+}
+
+static int live_encoded(const Opts *o, Camera *cam, int clarity){
+    int status = 1;
+    if(stream_open_bytes(o->out) != 0) return 1;
+
+    st_info("[step] starting video…");
+    if(rawmedia_start(camera_p2p_session(cam), clarity) == 0){
+        st_info("[step] video started");
+        live_wait(o);
+        st_info("[step] stopping video…");
+        rawmedia_stop();
+        st_info("[step] video stopped");
+
+        long n = stream_frame_count();
+        const char *codec = rawmedia_codec();
+        if(n > 0){
+            st_info("%ld NAL units streamed (%s) — play with: ffplay -f %s -framerate 15 -", n,
+                    codec ? codec : "?", codec && !strcmp(codec, "h265") ? "hevc" : "h264");
+            status = 0;
+        } else st_err("no video arrived on the media channel");
+    } else {
+        rawmedia_stop();
+        st_err("[step] video failed to start");
+    }
+
+    stream_close();
+    return status;
+}
+
+static int cmd_live(const Opts *o){
+    if(!o->dev_id){ st_err("live needs --dev-id <id>"); return 2; }
+    int clarity = camera_clarity_from_format(o->format);
+
+    CamSession S;
+    if(session_open(&S, o->dev_id, session_attempts()) != 0) return 1;
+    int status = o->raw ? live_decoded(o, S.cam, clarity) : live_encoded(o, S.cam, clarity);
     session_close(&S);
     return status;
 }

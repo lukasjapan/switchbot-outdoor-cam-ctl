@@ -57,10 +57,8 @@ static int write_all(const void *buf, size_t len){
 
 // Raw fds throughout rather than stdio: we need poll() on the descriptor, and a
 // FILE* would also buffer frames instead of releasing them as they are produced.
-int stream_open(const char *out, int w, int h, int fps){
+static int open_dest(const char *out){
     g_frames = 0; g_broken = 0; g_geom_warned = 0;
-    g_w = w; g_h = h; g_fps = fps > 0 ? fps : 15;
-
     if(!out || !*out || !strcmp(out, "-")){
         g_fd = STDOUT_FILENO;
         g_own_fd = 0;
@@ -69,6 +67,31 @@ int stream_open(const char *out, int w, int h, int fps){
         if(g_fd < 0){ st_err("cannot open %s for writing", out); return -1; }
         g_own_fd = 1;
     }
+    return 0;
+}
+
+static void report_write_failure(void){
+    g_broken = 1;
+    if(errno == ETIMEDOUT)
+        st_err("output stopped being read for %ds — assuming the consumer is "
+               "gone, stopping after %ld frames", STALL_LIMIT_MS / 1000, g_frames);
+    else if(errno == EPIPE)
+        st_info("output closed after %ld frames", g_frames);
+    else
+        st_err("write failed after %ld frames: %s", g_frames, strerror(errno));
+}
+
+int stream_open_bytes(const char *out){ return open_dest(out); }
+
+void stream_write_bytes(const uint8_t *buf, size_t len){
+    if(g_fd < 0 || g_broken || !buf || !len) return;
+    if(write_all(buf, len) != 0){ report_write_failure(); return; }
+    g_frames++;
+}
+
+int stream_open(const char *out, int w, int h, int fps){
+    g_w = w; g_h = h; g_fps = fps > 0 ? fps : 15;
+    if(open_dest(out) != 0) return -1;
 
     // YUV4MPEG2 stream header. Ip = progressive, A1:1 = square pixels,
     // C420mpeg2 = 4:2:0 planar. Written up front so a consumer that attaches
@@ -111,14 +134,7 @@ void stream_write_frame(const uint8_t *y, size_t ylen,
        write_all(y, ylen) != 0 ||
        write_all(u, ulen) != 0 ||
        write_all(v, vlen) != 0){
-        g_broken = 1;
-        if(errno == ETIMEDOUT)
-            st_err("output stopped being read for %ds — assuming the consumer is "
-                   "gone, stopping after %ld frames", STALL_LIMIT_MS / 1000, g_frames);
-        else if(errno == EPIPE)
-            st_info("output closed after %ld frames", g_frames);
-        else
-            st_err("write failed after %ld frames: %s", g_frames, strerror(errno));
+        report_write_failure();
         return;
     }
     g_frames++;

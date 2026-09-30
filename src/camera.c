@@ -41,6 +41,10 @@ struct Camera {
     volatile int last_state;
     volatile int last_error;
 
+    // The P2P SDK's session handle, for the encoded `live` path, which drives
+    // ThingP2PSendData directly. -1 until the session is up.
+    volatile int p2pSession;
+
     // Signaling pump.
     pthread_t pump;
     volatile int pump_stop;
@@ -142,33 +146,36 @@ static void on_void_callback(const char *method, MockObj *self, va_list *ap){
     // 4 = closed), i4 the error code.
     if(!strcmp(method, "onSessionStateChanged")){
         if(!ap) return;
-        (void)va_arg(*ap, MockObj*);          // session id string
-        int i0 = va_arg(*ap, int); (void)i0;
-        int i1 = va_arg(*ap, int); (void)i1;
+        MockObj *sid = va_arg(*ap, MockObj*); // session id string
+        int i0 = va_arg(*ap, int);
+        int i1 = va_arg(*ap, int);
         int state = va_arg(*ap, int);
-        int i3 = va_arg(*ap, int); (void)i3;
+        int i3 = va_arg(*ap, int);
         int err = va_arg(*ap, int);
         if(cam){
             cam->last_state = state;
             cam->last_error = err;
-            if(state == 3) cam->connected = 1;
+            // i0 is the handle ThingP2PSendData takes: checked on the camera,
+            // where it was 65537 and the commands sent on it were answered.
+            if(state == 3){ cam->connected = 1; cam->p2pSession = i0; }
             if(state == 4) cam->failed = 1;
         }
-        st_debug("P2P session state=%d err=%d", state, err);
+        st_debug("P2P session state=%d err=%d (id=%s i0=%d i1=%d i3=%d)", state, err,
+                 sid && sid->str ? sid->str : "", i0, i1, i3);
         return;
     }
     // ThingCameraListener.onSessionStatusChanged(sessionId, status): 5 = connected,
     // 4 = failure, 6 = not connected (ICameraP2P constants).
     if(!strcmp(method, "onSessionStatusChanged")){
         if(!ap) return;
-        int session = va_arg(*ap, int); (void)session;
+        int session = va_arg(*ap, int);
         int status  = va_arg(*ap, int);
         if(cam){
             cam->last_state = status;
             if(status == 5) cam->connected = 1;
             if(status == 4 || status == 6) cam->failed = 1;
         }
-        st_debug("camera session status=%d", status);
+        st_debug("camera session=%d status=%d", session, status);
         return;
     }
     // ThingBaseCallback.onResponse(String json, int code) — how the record-index
@@ -309,6 +316,7 @@ Camera *camera_open(const CredDevice *dev, Signaling *sg, const char *local_id){
     if(!cam) return NULL;
     cam->dev = dev;
     cam->sg  = sg;
+    cam->p2pSession = -1;
     cam->p2pConfig = strdup(dev->p2pConfig);
     cam->skill     = dev->skill ? strdup(dev->skill) : strdup("");
     // The app uses "<sessionTid>_<millis>"; any stable-per-connect value works.
@@ -382,6 +390,8 @@ int camera_connect(Camera *cam, const char *auth_pwd, int is_lan, int timeout_ms
         st_err("P2P session did not come up within %dms (last state=%d)", timeout_ms, cam->last_state);
     return -1;
 }
+
+int camera_p2p_session(Camera *cam){ return cam ? cam->p2pSession : -1; }
 
 int camera_start_preview(Camera *cam, int clarity){
     if(!cam) return -1;
