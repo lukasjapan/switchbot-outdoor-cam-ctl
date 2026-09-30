@@ -196,9 +196,9 @@ static void feed(const unsigned char *chunk, size_t n){
 // large"). So there is no reader here. Instead the executable exports its own
 // ThingP2PRecvData (see the Dockerfile's --export-dynamic-symbol), which the
 // loader binds the SDK's import to ahead of libThingP2PSDK's. Every call is
-// forwarded to the real one; while `live` is tapping, media-channel bytes go to
+// forwarded to the real one; while `live --native` is tapping, media-channel bytes go to
 // the de-framer and the SDK is told it got nothing — so it never has anything to
-// decode. All other channels, and all calls outside `live`, pass through untouched.
+// decode. All other channels, and all calls outside `live --native`, pass through untouched.
 __attribute__((visibility("default")))
 int ThingP2PRecvData(int session, unsigned channel, unsigned char *buf, int *len, int timeout_ms){
     if(!g_real_recv){

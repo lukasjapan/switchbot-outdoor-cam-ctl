@@ -30,11 +30,11 @@ Camera *camera_open(const CredDevice *dev, Signaling *sg, const char *local_id);
 int camera_connect(Camera *cam, const char *auth_pwd, int is_lan, int timeout_ms);
 
 // The P2P SDK's handle for this session (what ThingP2PSendData/RecvData take),
-// for the encoded `live` path. -1 until connected.
+// for `live --native`. -1 until connected.
 int camera_p2p_session(Camera *cam);
 
 // Live preview through the SDK: this also starts its software decoder, and frames
-// arrive decoded on the listener callbacks. Only `live --raw` wants that.
+// arrive decoded on the listener callbacks. Plain `live` uses it; `live --native` does not.
 int camera_start_preview(Camera *cam, int clarity);
 int camera_stop_preview(Camera *cam);
 

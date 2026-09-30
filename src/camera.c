@@ -41,7 +41,7 @@ struct Camera {
     volatile int last_state;
     volatile int last_error;
 
-    // The P2P SDK's session handle, for the encoded `live` path, which drives
+    // The P2P SDK's session handle, for `live --native`, which drives
     // ThingP2PSendData directly. -1 until the session is up.
     volatile int p2pSession;
 

@@ -7,7 +7,7 @@
 //
 // Wrapping them in YUV4MPEG2 fixes that for essentially nothing: a ~58-byte text
 // header plus 6 bytes per frame (0.002% on a 40 MB capture). It is streamable by
-// design and every ffmpeg tool auto-detects it, so `live --raw | ffplay -i pipe:0`
+// design and every ffmpeg tool auto-detects it, so `live | ffplay -`
 // works with no format flags at all.
 #ifndef OUTDOOR_CAM_STREAM_H
 #define OUTDOOR_CAM_STREAM_H
@@ -28,7 +28,7 @@ void stream_write_frame(const uint8_t *y, size_t ylen,
                         const uint8_t *u, size_t ulen,
                         const uint8_t *v, size_t vlen);
 
-// The encoded `live` path: same destination handling and bounded writes, but no
+// `live --native`: same destination handling and bounded writes, but no
 // header and no framing — the caller hands over finished bytes (one Annex-B access
 // unit or NAL at a time). Each call counts as one "frame" for stream_frame_count.
 int  stream_open_bytes(const char *out);

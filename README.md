@@ -237,32 +237,36 @@ osc record --duration 10 --out - | ssh nas 'cat > /vol/clip.mp4'
 
 #### `live` — stream until Ctrl-C or the player closes
 
-The camera's own video, untouched: an Annex-B elementary stream, H.265 1920x1080
-at `hd`, H.264 640x360 at `sd`, both 15 fps. Nothing is decoded along the way, so
-it costs about what the P2P transport costs, and it is small enough (~0.35 Mbit/s
-at `sd`) to send anywhere. Raw elementary streams carry no container and no timing,
-so tell the player the codec and the rate (without `-framerate 15` ffplay assumes 25):
+Y4M by default, so no player flags. The SDK decodes the camera's video in software
+under emulation and hands back I420, so this is uncompressed (~5 MB/s at `sd`, ~30
+MB/s at `hd`) and costly: ~15 fps at `sd` on a Mac, but ~8.5 on the Pi, ~10 at `hd`.
 
 ```bash
-osc live | ffplay -f hevc -framerate 15 -
-osc live --format sd | ffplay -f h264 -framerate 15 -
-osc live --format sd > cam.h264                          # keep it
+osc live | ffplay -
+osc live --format sd | ffplay -             # 640x360 instead of 1080p
+osc live | tee cam.y4m | ffplay -           # watch and keep
+ffmpeg -i cam.y4m -c:v libx264 cam.mp4      # compress afterwards
+```
+
+`--native` streams the camera's own video instead, untouched: an Annex-B elementary
+stream, H.265 1920x1080 at `hd`, H.264 640x360 at `sd`, both 15 fps. Nothing is
+decoded along the way, so it costs about what the P2P transport costs, and it is
+small enough (~0.35 Mbit/s at `sd`) to send anywhere. Elementary streams carry no
+container and no timing, so tell the player the codec and the rate (without
+`-framerate 15` ffplay assumes 25):
+
+```bash
+osc live --native | ffplay -f hevc -framerate 15 -
+osc live --native --format sd | ffplay -f h264 -framerate 15 -
+osc live --native --format sd > cam.h264                 # keep it
 ffmpeg -f h264 -framerate 15 -i cam.h264 -c copy cam.mp4 # into a container, no re-encode
 ```
 
-`--raw` is the old path: the SDK's own preview, which decodes in software under
-emulation and hands back I420, written as Y4M (so no player flags). Uncompressed,
-~5 MB/s at `sd`, and slow — ~15 fps at `sd` on a Mac but ~8.5 on the Pi, ~10 at `hd`.
-
-```bash
-osc live --raw --format sd | ffplay -i pipe:0
-```
-
-How the default works: `live` never starts the SDK's preview. It sends the
-commands `ThingCameraSimple::StartPreview` would (set clarity 9/0, start video 6/0;
-stop video 6/3 on the way out) straight through `ThingP2PSendData`, and takes the
-media channel over from the SDK's own reader by exporting `ThingP2PRecvData` from
-the executable, which the loader binds the SDK's import to. Details in
+How `--native` works: it never starts the SDK's preview. It sends the commands
+`ThingCameraSimple::StartPreview` would (set clarity 9/0, start video 6/0; stop
+video 6/3 on the way out) straight through `ThingP2PSendData`, and takes the media
+channel over from the SDK's own reader by exporting `ThingP2PRecvData` from the
+executable, which the loader binds the SDK's import to. Details in
 `src/rawmedia.c`.
 
 #### `snapshot` — single JPEG
@@ -290,7 +294,7 @@ Run `osc` with no arguments for the full option list.
 - **`live` gives up if nothing arrives within 60 s.** It can only notice a closed
   player by writing to it, so a camera that never sends a frame would otherwise hold
   the session indefinitely.
-- **`live` streams stop on a partial GOP.** A capture cut by `--duration` or
+- **`live --native` streams stop on a partial GOP.** A capture cut by `--duration` or
   Ctrl-C usually ends with an SPS/PPS and no picture after it; ffmpeg warns
   ("missing picture in access unit") and every earlier frame is fine.
 - **`record` has no audio track.** `download` does, since the SD card keeps it,

@@ -106,7 +106,7 @@ int stream_open(const char *out, int w, int h, int fps){
     }
 
     st_info("live: %dx%d Y4M (yuv420p), nominal %d fps", g_w, g_h, g_fps);
-    st_info("play with: ffplay -i pipe:0     (or: ffplay -)");
+    st_info("play with: ffplay -");
     return 0;
 }
 

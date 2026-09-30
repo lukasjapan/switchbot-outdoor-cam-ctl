@@ -72,7 +72,7 @@ typedef struct {
     int duration;
     const char *start_s, *stop_s;
     int json, show_secrets;
-    int raw;              // live: decoded Y4M via the SDK instead of the camera's own stream
+    int native;           // live: the camera's own encoded stream instead of decoded Y4M
 } Opts;
 
 static void usage(FILE *f){
@@ -103,13 +103,14 @@ static void usage(FILE *f){
 "  record     --dev-id <id> [--format hd|sd] [--duration <sec>]\n"
 "             [--out <file|->]         Record to mp4. hd = 1080p HEVC (default),\n"
 "                                      sd = 640x360 H.264.\n"
-"  live       --dev-id <id> [--format hd|sd] [--duration <sec>] [--raw]\n"
-"             [--out <file|->]         Stream until Ctrl-C: the camera's own video\n"
-"                                      as Annex-B, H.265 at hd, H.264 at sd:\n"
-"                                        live --format sd | ffplay -f h264 -framerate 15 -\n"
-"                                        live | ffplay -f hevc -framerate 15 -\n"
-"                                      --raw: decoded by the SDK, as Y4M (costly;\n"
-"                                        live --raw | ffplay -i pipe:0)\n"
+"  live       --dev-id <id> [--format hd|sd] [--duration <sec>] [--native]\n"
+"             [--out <file|->]         Stream until Ctrl-C, as Y4M (the SDK decodes,\n"
+"                                      so this is uncompressed). Self-describing:\n"
+"                                        live --format sd | ffplay -\n"
+"                                      --native: the camera's own video as Annex-B\n"
+"                                      (H.265 at hd, H.264 at sd), nothing decoded:\n"
+"                                        live --native --format sd | ffplay -f h264 -framerate 15 -\n"
+"                                        live --native | ffplay -f hevc -framerate 15 -\n"
 "  snapshot   --dev-id <id> [--out <file|->]     Single JPEG.\n"
 "  info       --dev-id <id>                      Camera capability JSON.\n"
 "  selftest   Load the native stack and initialise the engine (bring-up check).\n"
@@ -168,7 +169,7 @@ static int parse_args(int argc, char **argv, Opts *o){
         #undef OPT_LONG
         if(!strcmp(a, "--json")){ o->json = 1; continue; }
         if(!strcmp(a, "--show-secrets")){ o->show_secrets = 1; continue; }
-        if(!strcmp(a, "--raw")){ o->raw = 1; continue; }
+        if(!strcmp(a, "--native")){ o->native = 1; continue; }
         if(!strcmp(a, "-v") || !strcmp(a, "--verbose")){ g_status_verbose = 1; g_verbose = 1; continue; }
         if(!strcmp(a, "-h") || !strcmp(a, "--help")){ usage(stdout); exit(0); }
         st_err("unknown option '%s'", a);
@@ -596,12 +597,13 @@ static int cmd_record(const Opts *o){
 // ---- live ------------------------------------------------------------------
 // Continuous stream until Ctrl-C, in one of two shapes:
 //
-//   default  The camera's own encoded video (Annex-B H.264 at sd, H.265 at hd),
-//            read off the P2P session by rawmedia.c. The SDK's preview is never
-//            started, so nothing is decoded — the whole point, since that decode
-//            runs in software under emulation.
-//   --raw    The SDK's preview: its listener only offers *decoded* frames (three
-//            I420 planes — see the frame sink in camera.h), written as Y4M.
+//   default   The SDK's preview: its listener only offers *decoded* frames (three
+//             I420 planes — see the frame sink in camera.h), written as Y4M.
+//             Self-describing and easy to consume, but the decode runs in software
+//             under emulation, which is expensive.
+//   --native  The camera's own encoded video (Annex-B H.264 at sd, H.265 at hd),
+//             read off the P2P session by rawmedia.c. The SDK's preview is never
+//             started, so nothing is decoded. No container, so no timing either.
 
 // Runs until interrupted, --duration, the destination goes away, or output dries
 // up. The stall check is what catches a dead consumer. When the far end of a
@@ -613,7 +615,7 @@ static int cmd_record(const Opts *o){
 //
 // Before that, a separate, longer limit. Output that never starts is also how a
 // closed player looks, since we only learn the consumer is gone by writing to it:
-// on a poor link `live --raw | ffplay` was seen still holding the session a minute
+// on a poor link `live | ffplay` (decoded) was seen still holding the session a minute
 // after the window was closed, because the camera had not sent a single frame.
 static void live_wait(const Opts *o){
     const long long STALL_TICKS = 40;            // 10 s at 250 ms/tick
@@ -698,7 +700,7 @@ static int cmd_live(const Opts *o){
 
     CamSession S;
     if(session_open(&S, o->dev_id, session_attempts()) != 0) return 1;
-    int status = o->raw ? live_decoded(o, S.cam, clarity) : live_encoded(o, S.cam, clarity);
+    int status = o->native ? live_encoded(o, S.cam, clarity) : live_decoded(o, S.cam, clarity);
     session_close(&S);
     return status;
 }

@@ -48,7 +48,7 @@ COPY mocks ./mocks
 # that named a mux.c which does not exist). No -lpthread: bionic folds pthread
 # into libc, so the flag does not exist there.
 # ThingP2PRecvData is exported so the camera SDK's import of it binds to ours
-# (src/rawmedia.c): that is how the encoded `live` takes over the media channel.
+# (src/rawmedia.c): that is how `live --native` takes over the media channel.
 RUN --mount=type=bind,from=ndk,target=/ndk \
     set -eu; \
     CCDIR=/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin; \
