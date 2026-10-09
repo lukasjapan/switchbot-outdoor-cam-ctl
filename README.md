@@ -226,32 +226,19 @@ osc download --start 1785568473 --stop 1785568533 --out clip.mp4
 osc download --start 1785568473 --duration 60 --out - > /tmp/clip.mp4
 ```
 
-There is no file transfer behind this. The camera *plays the span back* over P2P,
-at about real time, and the SDK records that playback into the mp4 — decoding every
-frame in software while it does, which under emulation keeps a Pi 3 at 70-80 %.
-
-**`--native`** takes the playback off the wire instead, as `live --native` does: the
-SDK still sends the playback command (`0x7/0` with the span, then `0x7/4`), but the
-media channel is tapped, so it never receives a frame to decode (~20 % on the Pi 3).
-What comes out is the camera's own stream with no container: H.265 Annex-B on
-`--out`, and with `--audio-out` the sound as raw PCM, 8 kHz mono s16le, which
-arrives on P2P channel 2. ffmpeg joins them; only the audio is encoded:
+**`--native`.** The camera's own stream instead of the SDK's mp4, so nothing is
+decoded (~20 % of a Pi 3 against 70-80 %). Video is H.265 Annex-B on `--out`,
+sound is raw PCM (8 kHz mono s16le) on `--audio-out`. No container, so ffmpeg
+joins them:
 
 ```bash
 osc download --native --start 1791028125 --stop 1791028152 --out clip.h265 --audio-out clip.pcm
 ffmpeg -f hevc -framerate 15 -i clip.h265 -f s16le -ar 8000 -ac 1 -i clip.pcm \
-       -c:v copy -tag:v hvc1 -c:a aac -aac_coder fast -b:a 32k clip.mp4
+       -c:v copy -tag:v hvc1 -c:a aac clip.mp4
 ```
 
-`-framerate 15` is not a guess: every playback frame carries its recording time in
-ms (u64 at +8 of the frame header), and those put a 27 s clip at 410 frames, 15.00
-fps. The RTP timestamps in playback do not follow a 90 kHz clock, so they are no
-use for this. Playback frames are type 5 with `1` in the high half of the type
-word (`05 00 01 00`), audio frames type 9 with RTP payload type 99; otherwise the
-framing is the live one. The camera sends no "playback finished", so the download
-ends when a frame lands within 1 s of `--stop` (the last one of a 47 s span sat at
-46.92 s), or after 10 s of silence. Not sooner: playback pauses mid-span — 47 s of
-footage took 57 s to arrive — and a 4 s limit cut clips off.
+Either way the camera plays the span back at about real time; there is no faster
+transfer.
 
 #### `record` — capture live video to mp4
 
