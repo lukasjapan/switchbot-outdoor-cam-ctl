@@ -227,9 +227,8 @@ osc download --start 1785568473 --duration 60 --out - > /tmp/clip.mp4
 ```
 
 **`--native`.** The camera's own stream instead of the SDK's mp4, so nothing is
-decoded (~20 % of a Pi 3 against 70-80 %). Video is H.265 Annex-B on `--out`,
-sound is raw PCM (8 kHz mono s16le) on `--audio-out`. No container, so ffmpeg
-joins them:
+decoded. Video is H.265 Annex-B on `--out`, sound is raw PCM (8 kHz mono s16le) on
+`--audio-out`. No container, so ffmpeg joins them:
 
 ```bash
 osc download --native --start 1791028125 --stop 1791028152 --out clip.h265 --audio-out clip.pcm
