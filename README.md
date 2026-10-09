@@ -236,9 +236,6 @@ ffmpeg -f hevc -framerate 15 -i clip.h265 -f s16le -ar 8000 -ac 1 -i clip.pcm \
        -c:v copy -tag:v hvc1 -c:a aac clip.mp4
 ```
 
-Either way the camera plays the span back at about real time; there is no faster
-transfer.
-
 #### `record` — capture live video to mp4
 
 Fixed duration. Only a finished file is readable — the index lands at the end.
