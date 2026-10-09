@@ -23,6 +23,24 @@ int  rawmedia_start(int session, int clarity);
 // Send stop-video and hand the media channel back. Safe after a failed start.
 void rawmedia_stop(void);
 
+// The tap alone, for streams something else starts (playback): media-channel bytes
+// are de-framed to Annex-B and the SDK sees none, so it decodes nothing.
+// rawmedia_untap hands the channel back without sending anything.
+int  rawmedia_tap(int session);
+void rawmedia_untap(void);
+
+// The newest video frame's recording time, unix ms; 0 before the first. Only
+// playback frames carry it meaningfully.
+unsigned long long rawmedia_last_ms(void);
+
+// Also take the audio channel's PCM (8 kHz, mono, s16le) into `path`. Call after
+// rawmedia_tap; the file is closed by rawmedia_untap. 0 on success.
+int  rawmedia_audio_out(const char *path);
+
+// What the media channel carried: packets per RTP payload type, and the video
+// frame rate by the frame headers' recording times.
+void rawmedia_summary(void);
+
 // "h264", "h265", or NULL until the first video packet has arrived.
 const char *rawmedia_codec(void);
 

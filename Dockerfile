@@ -49,6 +49,7 @@ COPY mocks ./mocks
 # into libc, so the flag does not exist there.
 # ThingP2PRecvData is exported so the camera SDK's import of it binds to ours
 # (src/rawmedia.c): that is how `live --native` takes over the media channel.
+# ThingP2PSendData likewise, so the SDK's own commands (playback) pass by it.
 RUN --mount=type=bind,from=ndk,target=/ndk \
     set -eu; \
     CCDIR=/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin; \
@@ -64,6 +65,7 @@ RUN --mount=type=bind,from=ndk,target=/ndk \
     echo "== switchbot-outdoor-cam-ctl =="; \
     "$CC" -O2 -Wall -Wextra -fPIE -pie -Isrc src/*.c -ldl \
           -Wl,--export-dynamic-symbol=ThingP2PRecvData \
+          -Wl,--export-dynamic-symbol=ThingP2PSendData \
           -o /out/switchbot-outdoor-cam-ctl; \
     echo "== liblog shim =="; \
     "$CC" -O2 -Wall -shared -fPIC -Wl,-soname,liblog.so \

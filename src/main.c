@@ -72,7 +72,8 @@ typedef struct {
     int duration;
     const char *start_s, *stop_s;
     int json, show_secrets;
-    int native;           // live: the camera's own encoded stream instead of decoded Y4M
+    int native;           // live/download: the camera's own encoded stream, nothing decoded
+    const char *audio_out; // download --native: where the PCM goes
 } Opts;
 
 static void usage(FILE *f){
@@ -94,12 +95,18 @@ static void usage(FILE *f){
 "             [--json]                 Recordings on the SD card (current month\n"
 "             by default; the device has no bulk index, so listing iterates).\n"
 "  download   --dev-id <id> --start <time> [--stop <time> | --duration <sec>]\n"
-"             [--out <file|->]\n"
+"             [--out <file|->] [--native [--audio-out <file>]]\n"
 "             Download a recording to mp4. Recordings are addressed by time\n"
 "             range (the firmware reports no ids). <time> is either unix epoch\n"
 "             seconds, as `list` prints, or local wall-clock:\n"
 "               --start 1785568473\n"
 "               --start \"2026-08-01 16:14:33\"   --start 2026-08-01T16:14:33\n"
+"             The SDK decodes the whole span while it writes the mp4. --native\n"
+"             takes the camera's own stream instead, nothing decoded: Annex-B\n"
+"             video (H.265 at 15 fps) on --out, and with --audio-out the sound\n"
+"             as raw PCM (8 kHz mono s16le). No container, so ffmpeg joins them:\n"
+"               ffmpeg -f hevc -framerate 15 -i clip.h265 -f s16le -ar 8000 -ac 1\n"
+"                      -i clip.pcm -c:v copy -c:a aac clip.mp4\n"
 "  record     --dev-id <id> [--format hd|sd] [--duration <sec>]\n"
 "             [--out <file|->]         Record to mp4. hd = 1080p HEVC (default),\n"
 "                                      sd = 640x360 H.264.\n"
@@ -164,6 +171,7 @@ static int parse_args(int argc, char **argv, Opts *o){
         OPT_INT ("--duration",         duration)
         OPT_STR ("--start",            start_s)
         OPT_STR ("--stop",             stop_s)
+        OPT_STR ("--audio-out",        audio_out)
         #undef OPT_STR
         #undef OPT_INT
         #undef OPT_LONG
@@ -866,6 +874,91 @@ static int cmd_list(const Opts *o){
 // ---- download --------------------------------------------------------------
 // Recordings are addressed by time range (the firmware reports no ids), so the
 // span from `list` is the identifier.
+//
+// There is no file transfer: the SDK's "download" records a playback of the span
+// as the camera plays it out over P2P. Two ways to take that playback:
+//   default   startPlayBackDownload: the SDK writes an mp4 (with audio) — and
+//             decodes every frame in software while it does, under emulation.
+//   --native  The camera's own encoded video off the media channel, as with
+//             `live --native`: the SDK starts the playback but never receives a
+//             frame, so nothing is decoded. Annex-B, no container, no timing.
+
+// A --out style path for something written directly: "-" stays stdout, an
+// absolute path stays, a relative one lands under OUTDOOR_CAM_OUT_DIR.
+static const char *direct_path(const char *out, char *buf, size_t n){
+    if(!out || !*out || !strcmp(out, "-") || out[0] == '/') return out && *out ? out : "-";
+    const char *base = getenv("OUTDOOR_CAM_OUT_DIR");
+    snprintf(buf, n, "%s/%s", base && *base ? base : ".", out);
+    return buf;
+}
+
+// Ends when the frames reach the end of the span, or when the stream stops moving.
+static int download_encoded(const Opts *o, Camera *cam, long long start, long long stop){
+    int status = 1;
+    char vbuf[512], abuf[512];
+    if(stream_open_bytes(direct_path(o->out, vbuf, sizeof vbuf)) != 0) return 1;
+    if(rawmedia_tap(camera_p2p_session(cam)) != 0){ stream_close(); return 1; }
+    if(o->audio_out && rawmedia_audio_out(direct_path(o->audio_out, abuf, sizeof abuf)) != 0){
+        rawmedia_untap();
+        stream_close();
+        return 1;
+    }
+
+    // playTime is a seek position inside the span, as in the default path.
+    if(camera_start_playback(cam, start, stop, (int)start) != 0){
+        st_err("could not open playback");
+    } else {
+        // The camera sends no "finished" for a playback, so the end is read off
+        // the frames: the last one's recording time lands just short of the
+        // span's end (46.92 s into a 47 s span), hence the 1 s of slack. Failing
+        // that, silence — but not a short one: playback pauses mid-span (47 s of
+        // footage took 57 s to arrive), and a 4 s limit cut clips off at 14 %.
+        const long long STALL_TICKS = 40;            // 10 s at 250 ms/tick
+        const long long START_TICKS = 240;           // 60 s for the first output
+        long long cap = ((stop - start) * 4 + 60) * 4, ticks = 0, last_change = 0;
+        long seen = 0;
+        int pct = -1;
+        const char *why = "time budget used up";
+        while(!g_stop && !stream_broken() && ticks < cap){
+            usleep(250000);
+            ticks++;
+            long n = stream_frame_count();
+            if(n != seen){ seen = n; last_change = ticks; }
+            // The same progress line the SDK path prints, from the frames' own
+            // recording times rather than the SDK's counter.
+            unsigned long long ms = rawmedia_last_ms();
+            if(ms >= (unsigned long long)start * 1000ULL){
+                int p = (int)((ms - (unsigned long long)start * 1000ULL) / (10ULL * (unsigned long long)(stop - start)));
+                if(p > 100) p = 100;
+                if(p != pct){ pct = p; st_info("download %d%%", p); }
+            }
+            if(rawmedia_last_ms() + 1000ULL >= (unsigned long long)stop * 1000ULL){ why = "reached the end of the span"; break; }
+            if(seen > 0 && ticks - last_change >= STALL_TICKS){ why = "stream went quiet"; break; }
+            if(seen == 0 && ticks >= START_TICKS){ why = "nothing arrived"; break; }
+        }
+        if(g_stop) why = "interrupted";
+        st_info("playback over: %s after %.1fs", why, ticks / 4.0);
+        camera_stop_playback(cam);
+    }
+    rawmedia_untap();
+    rawmedia_summary();
+
+    long n = stream_frame_count();
+    const char *codec = rawmedia_codec();
+    if(n > 0){
+        const char *f = codec && !strcmp(codec, "h265") ? "hevc" : "h264";
+        if(o->audio_out)
+            st_info("%ld NAL units (%s) — into mp4 with: ffmpeg -f %s -framerate 15 -i <video>"
+                    " -f s16le -ar 8000 -ac 1 -i <audio> -c:v copy -c:a aac out.mp4", n, codec, f);
+        else
+            st_info("%ld NAL units (%s) — into mp4 with: ffmpeg -f %s -framerate 15 -i - -c copy out.mp4",
+                    n, codec ? codec : "?", f);
+        status = 0;
+    } else st_err("no video arrived on the media channel");
+    stream_close();
+    return status;
+}
+
 static int cmd_download(const Opts *o){
     if(!o->dev_id){ st_err("download needs --dev-id <id>"); return 2; }
     if(!o->start_s){ st_err("download needs --start <time> (see `switchbot-outdoor-cam-ctl list`)"); return 2; }
@@ -933,6 +1026,10 @@ static int cmd_download(const Opts *o){
                 }
                 if(!have_ctx) st_warn("could not load the day's fragment list; download may be refused");
             }
+            if(o->native){
+                status = download_encoded(o, cam, start, stop);
+                goto done;
+            }
             // playTime is a seek position inside the span, not an offset from
             // zero — the app passes a timestamp within [start, stop], and 0 is
             // rejected as out of range.
@@ -953,6 +1050,7 @@ static int cmd_download(const Opts *o){
             }
         }
     }
+done:
     session_close(&S);
     return status;
 }
