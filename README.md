@@ -226,6 +226,16 @@ osc download --start 1785568473 --stop 1785568533 --out clip.mp4
 osc download --start 1785568473 --duration 60 --out - > /tmp/clip.mp4
 ```
 
+**`--native`.** The camera's own stream instead of the SDK's mp4, so nothing is
+decoded. Video is H.265 Annex-B on `--out`, sound is raw PCM (8 kHz mono s16le) on
+`--audio-out`. No container, so ffmpeg joins them:
+
+```bash
+osc download --native --start 1791028125 --stop 1791028152 --out clip.h265 --audio-out clip.pcm
+ffmpeg -f hevc -framerate 15 -i clip.h265 -f s16le -ar 8000 -ac 1 -i clip.pcm \
+       -c:v copy -tag:v hvc1 -c:a aac clip.mp4
+```
+
 #### `record` — capture live video to mp4
 
 Fixed duration. Only a finished file is readable — the index lands at the end.
