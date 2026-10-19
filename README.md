@@ -297,14 +297,6 @@ osc snapshot --out - > /tmp/cam.jpg && open /tmp/cam.jpg
 osc info
 ```
 
-Also shows what the cloud last heard the camera report: `awake` (DP 149) and
-`workMode` (DP 189, `2` is deep sleep). Reading them does not wake the camera.
-
-Every media command reads `awake` before connecting and only wakes the camera
-when it is asleep, the way the SwitchBot app does. A wake is sent as three
-publishes 200 ms apart, also like the app. The cloud's flag can lag behind the
-camera falling asleep, so if a connect fails, the next attempt always wakes first.
-
 Run `osc` with no arguments for the full option list.
 
 - **Output** lands in `./recordings`. `--out -` writes to stdout instead — media
