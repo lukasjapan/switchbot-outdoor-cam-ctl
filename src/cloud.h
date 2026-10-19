@@ -51,6 +51,20 @@ int cloud_tuya_login(Creds *c, TuyaSession *out);
 // id the SwitchBot Open API reports for the camera).
 int cloud_device_detail(Creds *c, const TuyaSession *s, const char *dev_id);
 
+// What the cloud last heard the camera report, read fresh (never cached):
+// thing.m.device.get {devId} -> result.dps. -1 means the DP was not reported.
+//
+//   awake     DP 149 (`wireless_awake`): 1 while a low-power camera is up.
+//   workMode  DP 189: the WoOSC2's power mode; 2 is deep sleep.
+//
+// The SwitchBot app reads DP 149 before opening a camera and only wakes it when
+// it is 0 (CamCommonShowActivity, ShareCamUtil.isOsc2kNeedWakeUp).
+typedef struct {
+    int awake;
+    int workMode;
+} CloudDps;
+int cloud_device_dps(Creds *c, const TuyaSession *s, const char *dev_id, CloudDps *out);
+
 // Session config: thing.m.rtc.config.get + thing.m.rtc.session.init {devId} ->
 // password, p2pConfig (ICE / TURN / aesKey / sessionId / expire), skill, p2pId.
 //

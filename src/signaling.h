@@ -37,7 +37,8 @@ Signaling *signaling_start(const TuyaSession *s, const CredDevice *dev,
 // 302 frame. `topic` may be NULL to use the default smart/mb/out/<devId>.
 int  signaling_publish(Signaling *sg, const char *topic, const char *json);
 
-// Wake a low-power camera: CRC32(localKey) to m/w/<devId>.
+// Wake a low-power camera: CRC32(localKey) to m/w/<devId>, three times 200 ms
+// apart like the SwitchBot app.
 int  signaling_wake(Signaling *sg);
 
 // Pump the transport for up to timeout_ms, dispatching inbound 302 payloads.

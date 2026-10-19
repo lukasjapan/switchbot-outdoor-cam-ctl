@@ -181,6 +181,12 @@ int signaling_publish(Signaling *sg, const char *dev_id, const char *json){
     return rc;
 }
 
+// The SwitchBot app sends its wake as a burst: three publishes 200 ms apart
+// (ShareCamUtil.startWakeCam). Same here, so the camera sees what it would from
+// the app.
+#define WAKE_BURST    3
+#define WAKE_SPACE_US 200000
+
 int signaling_wake(Signaling *sg){
     if(!sg) return -1;
     // m/w/<devId> with CRC32(localKey) big-endian — wakes a low-power camera.
@@ -188,10 +194,14 @@ int signaling_wake(Signaling *sg){
     snprintf(topic, sizeof topic, "m/w/%s", sg->devId);
     unsigned char payload[4];
     put_be32(payload, crypto_crc32((const unsigned char*)sg->localKey, strlen(sg->localKey)));
-    st_debug("signaling: wake -> %s", topic);
-    pthread_mutex_lock(&sg->lock);
-    int rc = mqtt_publish(sg->mq, topic, payload, sizeof payload);
-    pthread_mutex_unlock(&sg->lock);
+    st_debug("signaling: wake -> %s (x%d)", topic, WAKE_BURST);
+    int rc = 0;
+    for(int i = 0; i < WAKE_BURST; i++){
+        if(i > 0) usleep(WAKE_SPACE_US);
+        pthread_mutex_lock(&sg->lock);
+        if(mqtt_publish(sg->mq, topic, payload, sizeof payload) != 0) rc = -1;
+        pthread_mutex_unlock(&sg->lock);
+    }
     return rc;
 }
 

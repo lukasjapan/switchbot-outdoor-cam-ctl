@@ -429,6 +429,10 @@ static int cmd_info(const Opts *o){
     // Also resolve the session config, so `info` reports everything needed to
     // open a P2P session (and warms the cache for the media commands).
     if(rc == 0) rc = cloud_rtc_config(&c, &s, o->dev_id, 0);
+    // What the camera last reported, as session_open reads it. Cloud only:
+    // asking does not wake the camera.
+    CloudDps dps = { -1, -1 };
+    if(rc == 0) cloud_device_dps(&c, &s, o->dev_id, &dps);
     if(rc == 0){
         creds_save(&c);
         CredDevice *d = creds_device(&c, o->dev_id);
@@ -442,8 +446,9 @@ static int cmd_info(const Opts *o){
             int have_auth = cloud_auth_pwd(d, authpwd) == 0;
             if(o->json)
                 printf("{\"devId\":\"%s\",\"name\":\"%s\",\"pv\":\"%s\",\"p2pType\":%d,"
-                       "\"localKey\":\"%s\",\"p2pConfig\":%s,\"skill\":%s}\n",
-                       d->devId, d->name, d->pv, d->p2pType, lk,
+                       "\"localKey\":\"%s\",\"awake\":%d,\"workMode\":%d,"
+                       "\"p2pConfig\":%s,\"skill\":%s}\n",
+                       d->devId, d->name, d->pv, d->p2pType, lk, dps.awake, dps.workMode,
                        d->p2pConfig ? d->p2pConfig : "null",
                        d->skill ? d->skill : "null");
             else {
@@ -454,6 +459,9 @@ static int cmd_info(const Opts *o){
                 printf("authPwd    %s\n", have_auth ? (o->show_secrets ? authpwd : hidden) : "(unavailable)");
                 printf("p2pConfig  %s\n", d->p2pConfig ? "present" : "missing");
                 printf("skill      %s\n", d->skill ? "present" : "missing");
+                printf("awake      %s\n", dps.awake < 0 ? "(not reported)" : dps.awake ? "yes (DP 149)" : "no (DP 149)");
+                if(dps.workMode < 0) printf("workMode   (not reported)\n");
+                else printf("workMode   %d (DP 189%s)\n", dps.workMode, dps.workMode == 2 ? ", deep sleep" : "");
             }
         }
     }
@@ -502,6 +510,20 @@ static int session_open(CamSession *s, const char *dev_id, int attempts){
 
     if(cloud_device_detail(&s->c, &s->ts, dev_id) != 0){ session_close(s); return -1; }
 
+    // Wake only a camera that is asleep, as the SwitchBot app does: it checks DP
+    // 149 first and sends no wake to a camera that reports itself awake. Every
+    // wake we send is one the camera did not need when sessions follow each other
+    // closely (an SD-card copy, an SD/HD switch). The cloud's copy can lag, so a
+    // failed connect always wakes before the next attempt.
+    CloudDps dps;
+    int need_wake = 1;
+    if(cloud_device_dps(&s->c, &s->ts, dev_id, &dps) == 0 && dps.awake == 1){
+        need_wake = 0;
+        st_info("camera reports itself awake — not waking it");
+    }
+    if(dps.workMode == 2)
+        st_info("camera is in deep-sleep mode (DP 189 = 2); the app wakes it over BLE/hub there");
+
     if(attempts < 1) attempts = 1;
     for(int attempt = 1; attempt <= attempts; attempt++){
         if(attempt > 1) st_info("retrying (attempt %d of %d)…", attempt, attempts);
@@ -515,7 +537,9 @@ static int session_open(CamSession *s, const char *dev_id, int attempts){
 
         s->sg = signaling_start(&s->ts, s->dev, s->c.tyCountryCode);
         if(!s->sg){ session_drop_attempt(s); goto backoff; }
-        signaling_wake(s->sg);          // low-power cameras sleep until poked
+        // Low-power cameras sleep until poked. A retry always pokes: the first
+        // attempt may have trusted a stale "awake".
+        if(need_wake || attempt > 1) signaling_wake(s->sg);
 
         s->cam = camera_open(s->dev, s->sg, s->ts.uid);
         if(!s->cam){ session_drop_attempt(s); goto backoff; }

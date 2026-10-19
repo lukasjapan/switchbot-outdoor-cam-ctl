@@ -477,6 +477,47 @@ int cloud_device_detail(Creds *c, const TuyaSession *s, const char *dev_id){
     return 0;
 }
 
+// A DP value as an int: Tuya reports booleans, numbers, and enum strings ("2").
+static int dp_int(const JNode *dps, const char *id){
+    JNode *v = json_get(dps, id);
+    if(!v) return -1;
+    if(v->type == J_BOOL)  return json_bool(v, -1);
+    if(v->type == J_NUM)   return (int)json_num(v, -1);
+    if(v->type == J_STR){
+        const char *s = json_str(v, "");
+        char *end; long n = strtol(s, &end, 10);
+        return (*s && !*end) ? (int)n : -1;
+    }
+    return -1;
+}
+
+int cloud_device_dps(Creds *c, const TuyaSession *s, const char *dev_id, CloudDps *out){
+    out->awake = -1;
+    out->workMode = -1;
+    if(!dev_id || !*dev_id) return -1;
+
+    JBuf pb; jbuf_init(&pb);
+    jbuf_raw(&pb, "{");
+    int first = 1;
+    jbuf_kv(&pb, "devId", dev_id, &first);
+    jbuf_raw(&pb, "}");
+    JDoc *d = tuya_atop(c->tyApiUrl ? c->tyApiUrl : cloud_tuya_api_url(c->tyCountryCode),
+                        "thing.m.device.get", "1.0", pb.buf, s, NULL);
+    jbuf_free(&pb);
+    if(!tuya_ok(d)){ tuya_log_error("thing.m.device.get", d); json_free(d); return -1; }
+
+    JNode *dps = json_get(json_get(json_root(d), "result"), "dps");
+    if(!dps){
+        st_debug("device detail carries no dps");
+        json_free(d); return -1;
+    }
+    out->awake    = dp_int(dps, "149");
+    out->workMode = dp_int(dps, "189");
+    st_debug("dps: 149 (awake)=%d 189 (work mode)=%d", out->awake, out->workMode);
+    json_free(d);
+    return 0;
+}
+
 int cloud_auth_pwd(const CredDevice *dev, char out[33]){
     if(!dev || !dev->password[0] || !dev->localKey[0]){
         st_err("cannot derive the P2P password (missing device password or localKey)");
